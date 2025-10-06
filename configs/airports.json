@@ -1,0 +1,212 @@
+[
+  {
+    "airportName": "Heathrow Airport",
+    "city": "London",
+    "country": "United Kingdom",
+    "iata": "LHR",
+    "icao": "EGLL"
+  },
+  {
+    "airportName": "Istanbul Airport",
+    "city": "Istanbul",
+    "country": "Turkey",
+    "iata": "IST",
+    "icao": "LTFM"
+  },
+  {
+    "airportName": "Charles de Gaulle Airport",
+    "city": "Paris",
+    "country": "France",
+    "iata": "CDG",
+    "icao": "LFPG"
+  },
+  {
+    "airportName": "Amsterdam Airport Schiphol",
+    "city": "Amsterdam",
+    "country": "Netherlands",
+    "iata": "AMS",
+    "icao": "EHAM"
+  },
+  {
+    "airportName": "Adolfo Suárez Madrid–Barajas Airport",
+    "city": "Madrid",
+    "country": "Spain",
+    "iata": "MAD",
+    "icao": "LEMD"
+  },
+  {
+    "airportName": "Frankfurt am Main Airport",
+    "city": "Frankfurt",
+    "country": "Germany",
+    "iata": "FRA",
+    "icao": "EDDF"
+  },
+  {
+    "airportName": "Josep Tarradellas Barcelona–El Prat Airport",
+    "city": "Barcelona",
+    "country": "Spain",
+    "iata": "BCN",
+    "icao": "LEBL"
+  },
+  {
+    "airportName": "Rome Fiumicino Airport",
+    "city": "Rome",
+    "country": "Italy",
+    "iata": "FCO",
+    "icao": "LIRF"
+  },
+  {
+    "airportName": "Sheremetyevo International Airport",
+    "city": "Moscow",
+    "country": "Russia",
+    "iata": "SVO",
+    "icao": "UUEE"
+  },
+  {
+    "airportName": "Gatwick Airport",
+    "city": "London",
+    "country": "United Kingdom",
+    "iata": "LGW",
+    "icao": "EGKK"
+  },
+  {
+    "airportName": "Munich Airport",
+    "city": "Munich",
+    "country": "Germany",
+    "iata": "MUC",
+    "icao": "EDDM"
+  },
+  {
+    "airportName": "Lisbon Airport",
+    "city": "Lisbon",
+    "country": "Portugal",
+    "iata": "LIS",
+    "icao": "LPPT"
+  },
+  {
+    "airportName": "Dublin Airport",
+    "city": "Dublin",
+    "country": "Ireland",
+    "iata": "DUB",
+    "icao": "EIDW"
+  },
+  {
+    "airportName": "Palma de Mallorca Airport",
+    "city": "Palma de Mallorca",
+    "country": "Spain",
+    "iata": "PMI",
+    "icao": "LEPA"
+  },
+  {
+    "airportName": "Orly Airport",
+    "city": "Paris",
+    "country": "France",
+    "iata": "ORY",
+    "icao": "LFPO"
+  },
+  {
+    "airportName": "Athens International Airport",
+    "city": "Athens",
+    "country": "Greece",
+    "iata": "ATH",
+    "icao": "LGAV"
+  },
+  {
+    "airportName": "Vienna Airport",
+    "city": "Vienna",
+    "country": "Austria",
+    "iata": "VIE",
+    "icao": "LOWW"
+  },
+  {
+    "airportName": "Zurich Airport",
+    "city": "Zürich",
+    "country": "Switzerland",
+    "iata": "ZRH",
+    "icao": "LSZH"
+  },
+  {
+    "airportName": "Manchester Airport",
+    "city": "Manchester",
+    "country": "United Kingdom",
+    "iata": "MAN",
+    "icao": "EGCC"
+  },
+  {
+    "airportName": "Copenhagen Airport",
+    "city": "Copenhagen",
+    "country": "Denmark",
+    "iata": "CPH",
+    "icao": "EKCH"
+  },
+  {
+    "airportName": "Stansted Airport",
+    "city": "London",
+    "country": "United Kingdom",
+    "iata": "STN",
+    "icao": "EGSS"
+  },
+  {
+    "airportName": "Malpensa Airport",
+    "city": "Milan",
+    "country": "Italy",
+    "iata": "MXP",
+    "icao": "LIMC"
+  },
+  {
+    "airportName": "Oslo Airport, Gardermoen",
+    "city": "Oslo",
+    "country": "Norway",
+    "iata": "OSL",
+    "icao": "ENGM"
+  },
+  {
+    "airportName": "Berlin Brandenburg Airport",
+    "city": "Berlin",
+    "country": "Germany",
+    "iata": "BER",
+    "icao": "EDDB"
+  },
+  {
+    "airportName": "Málaga Airport",
+    "city": "Málaga",
+    "country": "Spain",
+    "iata": "AGP",
+    "icao": "LEMG"
+  },
+  {
+    "airportName": "Brussels Airport",
+    "city": "Brussels",
+    "country": "Belgium",
+    "iata": "BRU",
+    "icao": "EBBR"
+  },
+  {
+    "airportName": "Stockholm Arlanda Airport",
+    "city": "Stockholm",
+    "country": "Sweden",
+    "iata": "ARN",
+    "icao": "ESSA"
+  },
+  {
+    "airportName": "Warsaw Chopin Airport",
+    "city": "Warsaw",
+    "country": "Poland",
+    "iata": "WAW",
+    "icao": "EPWA"
+  },
+  {
+    "airportName": "Pulkovo Airport",
+    "city": "Saint Petersburg",
+    "country": "Russia",
+    "iata": "LED",
+    "icao": "ULLI"
+  },
+  {
+    "airportName": "Düsseldorf Airport",
+    "city": "Düsseldorf",
+    "country": "Germany",
+    "iata": "DUS",
+    "icao": "EDDL"
+  }
+]

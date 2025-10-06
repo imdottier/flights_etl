@@ -1,0 +1,134 @@
+# configs/silver_schemas.yaml
+
+silver:
+  fct_flights:
+    final_column_order:
+      # --- Foreign Keys (created on the fly, no original name) ---
+      - name: flight_pk
+      - name: flight_composite_pk
+      - name: departure_airport_pk
+      - name: arrival_airport_pk
+      - name: airline_pk
+      - name: aircraft_pk
+
+      # --- Flight Identity ---
+      - name: number
+        alias: flight_number
+      - name: call_sign
+        alias: flight_callsign
+      - name: status
+        alias: flight_status
+      - name: codeshare_status
+      - name: is_cargo
+
+      # --- Departure Timestamps ---
+      - name: departure_scheduled_time_utc
+        alias: dep_scheduled_at_utc
+      - name: departure_revised_time_utc
+        alias: dep_revised_at_utc
+      - name: departure_predicted_time_utc
+        alias: dep_predicted_at_utc
+      - name: departure_runway_time_utc
+        alias: dep_runway_at_utc
+      - name: departure_scheduled_time_local_ntz
+      - name: departure_revised_time_local_ntz
+      - name: departure_predicted_time_local_ntz
+      - name: departure_runway_time_local_ntz
+      - name: dep_local_timezone
+
+      # --- Arrival Timestamps ---
+      - name: arrival_scheduled_time_utc
+        alias: arr_scheduled_at_utc
+      - name: arrival_revised_time_utc
+        alias: arr_revised_at_utc
+      - name: arrival_predicted_time_utc
+        alias: arr_predicted_at_utc
+      - name: arrival_runway_time_utc
+        alias: arr_runway_at_utc
+      - name: arrival_scheduled_time_local_ntz
+      - name: arrival_revised_time_local_ntz
+      - name: arrival_predicted_time_local_ntz
+      - name: arrival_runway_time_local_ntz
+      - name: arr_local_timezone # This column is created in the Spark job
+
+      # --- Operational Details ---
+      - name: departure_terminal
+        alias: dep_terminal
+      - name: departure_gate
+        alias: dep_gate
+      - name: arrival_terminal
+        alias: arr_terminal
+      - name: arrival_baggage_belt
+        alias: arr_baggage_belt
+      - name: departure_quality
+        alias: dep_quality
+      - name: arrival_quality
+        alias: arr_quality
+        
+      # --- Live Location (simplified names) ---
+      - name: location_reported_at_utc
+        alias: last_location_reported_at_utc
+      - name: location_lat
+        alias: latitude
+      - name: location_lon
+        alias: longitude
+      - name: location_altitude_feet
+        alias: altitude_ft
+      - name: location_ground_speed_kt
+        alias: ground_speed_kts
+      - name: location_true_track_deg
+        alias: true_track_deg
+
+      # --- Metadata for Lineage ---
+      - name: ingestion_hour
+
+  
+  dim_airports_detailed:
+    final_column_order:
+      # No alias needed, name is good as is
+      - name: iata 
+      - name: icao
+      
+      # Rename for clarity and consistency
+      - name: short_name
+      - name: full_name
+      - name: municipality_name
+      - name: location_lat
+        alias: latitude
+      - name: location_lon
+        alias: longitude
+      - name: elevation_feet
+      - name: country_code
+      - name: country_name
+      - name: continent_code
+      - name: continent_name
+      - name: time_zone
+
+
+  dim_runways:
+    final_column_order:
+      # --- Keys and Identifiers ---
+      # No alias needed, this is the Foreign Key to dim_airports
+      - name: airport_pk
+      - name: name
+        alias: runway_name
+
+      # --- Core Attributes ---
+      - name: true_hdg
+        alias: true_heading
+      - name: surface
+      - name: has_lighting
+      - name: is_closed
+
+      # --- Physical Dimensions ---
+      # Standardize on feet, the aviation industry standard, and drop all others
+      - name: length_feet
+      - name: width_feet
+      - name: displaced_threshold_feet
+
+      # --- Geospatial ---
+      # Rename for consistency with dim_airports
+      - name: location_lat
+        alias: latitude
+      - name: location_lon
+        alias: longitude
