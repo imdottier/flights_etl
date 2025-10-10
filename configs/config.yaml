@@ -1,15 +1,18 @@
 # configs/silver_schemas.yaml
 
+# Commented out sections are in API schema but data not currently available
+
 silver:
   fct_flights:
     final_column_order:
       # --- Foreign Keys (created on the fly, no original name) ---
-      - name: flight_pk
       - name: flight_composite_pk
-      - name: departure_airport_pk
-      - name: arrival_airport_pk
-      - name: airline_pk
-      - name: aircraft_pk
+      - name: departure_airport_sk
+      - name: arrival_airport_sk
+      - name: airline_sk
+      - name: aircraft_sk
+      - name: departure_runway_sk
+      - name: arrival_runway_sk
 
       # --- Flight Identity ---
       - name: number
@@ -26,14 +29,18 @@ silver:
         alias: dep_scheduled_at_utc
       - name: departure_revised_time_utc
         alias: dep_revised_at_utc
-      - name: departure_predicted_time_utc
-        alias: dep_predicted_at_utc
+      # - name: departure_predicted_time_utc
+      #   alias: dep_predicted_at_utc
       - name: departure_runway_time_utc
         alias: dep_runway_at_utc
       - name: departure_scheduled_time_local_ntz
+        alias: dep_scheduled_at_local_ntz
       - name: departure_revised_time_local_ntz
-      - name: departure_predicted_time_local_ntz
+        alias: dep_revised_at_local_ntz
+      # - name: departure_predicted_time_local_ntz
+      #   alias: dep_predicted_at_local_ntz
       - name: departure_runway_time_local_ntz
+        alias: dep_runway_at_local_ntz
       - name: dep_local_timezone
 
       # --- Arrival Timestamps ---
@@ -41,27 +48,44 @@ silver:
         alias: arr_scheduled_at_utc
       - name: arrival_revised_time_utc
         alias: arr_revised_at_utc
-      - name: arrival_predicted_time_utc
-        alias: arr_predicted_at_utc
+      # - name: arrival_predicted_time_utc
+      #   alias: arr_predicted_at_utc
       - name: arrival_runway_time_utc
         alias: arr_runway_at_utc
       - name: arrival_scheduled_time_local_ntz
+        alias: arr_scheduled_at_local_ntz
       - name: arrival_revised_time_local_ntz
-      - name: arrival_predicted_time_local_ntz
+        alias: arr_revised_at_local_ntz
+      # - name: arrival_predicted_time_local_ntz
+      #   alias: arr_predicted_at_local_ntz
       - name: arrival_runway_time_local_ntz
+        alias: arr_runway_at_local_ntz
       - name: arr_local_timezone # This column is created in the Spark job
 
       # --- Operational Details ---
       - name: departure_terminal
         alias: dep_terminal
+      - name: departure_check_in_desk
+        alias: dep_checkin_desk
       - name: departure_gate
         alias: dep_gate
-      - name: arrival_terminal
-        alias: arr_terminal
-      - name: arrival_baggage_belt
-        alias: arr_baggage_belt
+      # - name: departure_baggage_belt
+      #   alias: dep_baggage_belt
+      - name: departure_runway
+        alias: dep_runway
       - name: departure_quality
         alias: dep_quality
+
+      - name: arrival_terminal
+        alias: arr_terminal
+      # - name: arrival_check_in_desk
+      #   alias: arr_checkin_desk
+      - name: arrival_gate
+        alias: arr_gate
+      - name: arrival_baggage_belt
+        alias: arr_baggage_belt
+      - name: arrival_runway
+        alias: arr_runway
       - name: arrival_quality
         alias: arr_quality
         
@@ -109,7 +133,10 @@ silver:
     final_column_order:
       # --- Keys and Identifiers ---
       # No alias needed, this is the Foreign Key to dim_airports
-      - name: airport_pk
+      # - name: runway_business_key
+      # - name: runway_sk
+      
+      - name: airport_sk
       - name: name
         alias: runway_name
 
