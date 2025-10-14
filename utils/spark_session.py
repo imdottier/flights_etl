@@ -18,9 +18,23 @@ def get_spark_session(app_name: str="Test Pipeline") -> SparkSession:
             builder.master("local[*]")
                     .config("spark.sql.warehouse.dir", SPARK_WAREHOUSE_DEV)
                     .config("spark.hadoop.fs.defaultFS", "file:///")
+                    .config("spark.hadoop.validateOutputSpecs", "false")
+                    .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.LocalFileSystem")
+                    .config("spark.driver.memory", "4g")
                     .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.0")
                     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
                     .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+                    .config("spark.ui.showConsoleProgress", "false")
+                    .config("spark.sql.debug.maxToStringFields", "10")
+                    .config("spark.executor.extraJavaOptions", "-Dlog4j2.formatMsgNoLookups=true")
+                    .config("spark.driver.extraJavaOptions",
+                           "-Dlog4j2.formatMsgNoLookups=true "
+                           "-Dorg.apache.spark.ui.showConsoleProgress=false "
+                           "-Dlog4j.rootCategory=ERROR,console "
+                           "-Dlog4j.logger.org.apache.spark=ERROR "
+                           "-Dlog4j.logger.org.spark_project=ERROR "
+                           "-Dlog4j.logger.org.apache.hadoop=ERROR "
+                           "-Dlog4j.logger.io.delta=ERROR")
                     .enableHiveSupport()
         )
 

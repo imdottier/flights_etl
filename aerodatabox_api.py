@@ -157,12 +157,12 @@ def generate_batch_timestamps(args) -> list[str]:
 
 
 # --- main function (MODIFIED for historical runs) ---
-def main(batches_to_process: list[str], process_airports: bool=False):
+def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False):
     """
     Main execution block for the crawl process.
 
     Args:
-        batches_to_process: List of ingestion hour strings (YYYY-MM-DD-HH) to process
+        ingestion_hours: List of ingestion hour strings (YYYY-MM-DD-HH) to process
         process_airports: Whether to fetch airport data as well
     """
     log_filepath = setup_logging(log_name="crawl")
@@ -195,7 +195,7 @@ def main(batches_to_process: list[str], process_airports: bool=False):
         logging.info(f"Completed airport data fetch. Success: {len(airport_summary['processed'])}, Failed: {len(airport_summary['failed'])}")
 
     # 2. Process each batch sequentially
-    for ingestion_hour in batches_to_process:
+    for ingestion_hour in ingestion_hours:
         # Start time and summary are now PER BATCH
         batch_start_time = datetime.now(timezone.utc)
         crawl_summary = {
@@ -297,8 +297,8 @@ if __name__ == "__main__":
     process_airports = args.airports
 
     # 2. Generate the list of batches to process based on validated arguments.
-    batches_to_process = generate_batch_timestamps(args)
-    logging.info(f"Generated {len(batches_to_process)} batch(es) to process: {batches_to_process}")
+    ingestion_hours = generate_batch_timestamps(args)
+    logging.info(f"Generated {len(ingestion_hours)} batch(es) to process: {ingestion_hours}")
 
     # 3. Call main with the list of batches and airport processing flag
-    main(batches_to_process, process_airports)
+    run_crawl_pipeline(ingestion_hours, process_airports)

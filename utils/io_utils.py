@@ -35,9 +35,9 @@ def read_df(spark: SparkSession, layer: str, table_name: str, **kwargs) -> DataF
         df = spark.read.table(full_table_name)
         if "where" in kwargs:
             df = df.where(kwargs["where"])
-        print(f"Successfully read {full_table_name}")
+        logging.info(f"Successfully read {full_table_name}")
         return df
     
     except Exception as e:
-        print(f"Error reading {full_table_name}: {e}")
+        logging.error(f"Error reading {full_table_name}: {e}", exc_info=True)
         raise

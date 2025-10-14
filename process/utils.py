@@ -8,7 +8,8 @@ import pandas as pd
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     pandas_udf, col, coalesce, to_timestamp, explode,
-    sha2, concat_ws, current_timestamp, xxhash64, lit
+    sha2, concat_ws, current_timestamp, xxhash64, lit,
+    lower, trim, when, length, regexp_extract
 )
 import functools
 from pyspark.sql.types import StructType,  StringType
@@ -40,29 +41,29 @@ def json_to_df(
     Returns:
         DataFrame: The DataFrame read from the given path.
     """
-    base_path = os.path.join(BRONZE_RAW_BASE, table_name)
+    base_path = BRONZE_RAW_BASE / table_name
+    print(base_path)
 
     if ingestion_hours:
         # Read selected hours
-        path_glob = f"{base_path}/ingestion_hour={{{','.join(ingestion_hours)}}}"
-        logging.info(f"Reading from selected partitions: {path_glob}")
-        path_to_read = path_glob
+        paths = [str(base_path / f"ingestion_hour={hour}") for hour in ingestion_hours]
+        logging.info(f"Reading from selected partitions: {paths}")
     else:
         # Read all partitions
         logging.info(f"Reading from all partitions in: {base_path}")
-        path_to_read = base_path
+        paths = str(base_path)
     
     try:
-        logging.info(f"Trying to read JSON from path '{path_to_read}'")
+        logging.info(f"Trying to read JSON from path '{paths}'")
 
-        reader = spark.read.schema(schema)
-        df = reader.json(path_to_read)
+        reader = spark.read.schema(schema).option("basePath", str(base_path))
+        df = reader.json(paths)
 
         logging.info(f"Successfully read data into a DataFrame.")
         return df
 
     except Exception as e:
-        logging.error(f"Failed to read JSON from path '{path_to_read}'. Error: {e}", exc_info=True)
+        logging.error(f"Failed to read JSON from path '{paths}'. Error: {e}", exc_info=True)
         raise
 
 
@@ -146,8 +147,8 @@ def write_delta_table(
     df: DataFrame,
     db_name: str,
     table_name: str,
-    write_mode: str = "overwrite",
-    primary_keys: list[str] | None = None,
+    write_mode: str, # 'overwrite_table', 'overwrite_partitions', 'merge'
+    merge_keys: list[str] | None = None,
     partition_cols: list[str] | None = None,
 ):
     """
@@ -165,57 +166,82 @@ def write_delta_table(
     table_path = f"{base}/{db_name}/{table_name}"
     logging.info(f"--- Preparing to write to Delta table: {full_table_name} ---")
 
+    # Safety checks
+    if write_mode == "overwrite_partitions" and not partition_cols:
+        raise ValueError("FATAL: 'partition_cols' must be provided for 'overwrite_partitions' mode.")
+    if write_mode == "merge" and not merge_keys:
+        raise ValueError("FATAL: 'merge_keys' must be provided for 'merge' mode.")
+
     try:
-        if not spark.catalog.tableExists(full_table_name):
+        table_exists = spark.catalog.tableExists(full_table_name)
+
+        if not table_exists:
             logging.info(f"Table '{full_table_name}' does not exist. Creating new external table...")
-
-            logging.info(f"Writing delta table to {table_path}")
             
-            writer = df.write.mode("overwrite") \
-                        .format("delta") \
-                        .option("mergeSchema", "true")
+            if partition_cols and write_mode in ["overwrite_table", "overwrite_partitions"]:
+                logging.info(f"Creating and partitioning table by: {partition_cols}")
+                (
+                    df.write
+                    .format("delta")
+                    .mode("overwrite")
+                    # DO NOT use overwriteSchema here, as it conflicts with partitionBy on creation
+                    .partitionBy(*partition_cols)
+                    .save(table_path)
+                )
 
+            # Case 2: The table will NOT be partitioned
+            else:
+                logging.info("Creating a new unpartitioned table.")
+                (
+                    df.write
+                    .format("delta")
+                    .mode("overwrite")
+                    .option("overwriteSchema", "true") # Safe to use here
+                    .save(table_path)
+                )
+
+            spark.sql(f"CREATE TABLE {full_table_name} USING DELTA LOCATION '{table_path}'")
+            logging.info(f"✅ Table '{full_table_name}' successfully created.")
+            # Since the table was just created with the full data, the job is done.
+            return
+
+        # --- Logic for Full Table Overwrite ---
+        if write_mode == "overwrite_table":
+            logging.info(f"Performing a FULL table overwrite for {full_table_name}.")
+            writer = df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
+            
+            # Partitioning is only applied on creation
             if partition_cols:
                 writer = writer.partitionBy(*partition_cols)
-
+            
             writer.save(table_path)
+            # Ensure table is registered in metastore after the data is written
+            spark.sql(f"CREATE TABLE IF NOT EXISTS {full_table_name} USING DELTA LOCATION '{table_path}'")
 
-            logging.info(f"Registering table '{full_table_name}' in metastore.")
-            spark.sql(f"CREATE TABLE {full_table_name} USING DELTA LOCATION '{table_path}'")
-            logging.info(f"✅ EXTERNAL Table '{full_table_name}' successfully created and registered.")
+        # --- Logic for Dynamic Partition Overwrite ---
+        elif write_mode == "overwrite_partitions":
+            logging.info(f"Performing a DYNAMIC PARTITION overwrite for {full_table_name}.")
+            spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+            df.write.format("delta").mode("overwrite").option("mergeSchema", "true") \
+                .partitionBy(*partition_cols).save(table_path)
+    
+        # --- Logic for Merge ---
+        elif write_mode == "merge":
+            logging.info(f"Performing a MERGE operation for {full_table_name}.")
+            delta_table = DeltaTable.forPath(spark, table_path)
+            merge_condition = " AND ".join([f"target.{key} = source.{key}" for key in merge_keys])
+            
+            delta_table.alias("target").merge(
+                df.alias("source"), merge_condition
+            ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
 
         else:
-            if write_mode == "merge":
-                logging.info(f"Table '{full_table_name}' exists. Performing merge operation...")
-                delta_table = DeltaTable.forName(spark, full_table_name)
-                
-                # Assuming 'id' is the primary key for merge condition; adjust as necessary
-                merge_condition = " AND ".join([f"target.{key} = source.{key}" for key in primary_keys]) if primary_keys else "1=0"
-                
-                (
-                    delta_table.alias("target").merge(
-                        df.alias("source"),
-                        merge_condition
-                    ).whenMatchedUpdateAll()
-                    .whenNotMatchedInsertAll()
-                    .execute()
-                )
-            
-                logging.info(f"✅ Merge operation for '{full_table_name}' complete.")
-            
-            elif write_mode == "overwrite":
-                logging.info(f"Table '{full_table_name}' exists. Performing dynamic partition overwrite...")
-                spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
-                
-                df.write.mode("overwrite") \
-                    .format("delta") \
-                    .option("mergeSchema","true") \
-                    .insertInto(full_table_name)
+            raise ValueError(f"Invalid write_mode '{write_mode}'. Must be 'overwrite_table', 'overwrite_partitions', or 'merge'.")
 
-                logging.info(f"✅ Dynamic partition overwrite for '{full_table_name}' complete.")
+        logging.info(f"✅ Write operation '{write_mode}' for {full_table_name} complete.")
 
     except Exception as e:
-        logging.error(f"FATAL: Failed during WRITE phase for '{full_table_name}'. Error: {e}", exc_info=True)
+        logging.error(f"FATAL: Failed during WRITE phase for '{full_table_name}'.", exc_info=True)
         raise
 
 
@@ -269,8 +295,6 @@ def write_delta_table_with_scd(
             sha2(concat_ws("|", *non_key_columns), 256)
         )
 
-        source_df_with_hash.printSchema()
-
         target_df_with_hash = (
             target_table.toDF()
             .filter(col("effective_end_date").isNull())
@@ -279,8 +303,6 @@ def write_delta_table_with_scd(
                 sha2(concat_ws("|", *non_key_columns), 256)
             )
         )
-
-        target_df_with_hash.printSchema()
 
         join_condition = [
             col(f"source.{key}") == col(f"target.{key}") for key in business_keys
@@ -308,8 +330,9 @@ def write_delta_table_with_scd(
 
         new_records = (
             staging_df
+            .filter((col("existing_sk").isNull()) | (col("existing_hash") != col("row_hash")))
             .select(
-                xxhash64(concat_ws("||", *business_keys, now)).alias(surrogate_key),
+                xxhash64(concat_ws("||", *business_keys)).alias(surrogate_key),
                 *df.columns,
                 now.alias("effective_start_date"),
                 lit(None).cast("timestamp").alias("effective_end_date")
@@ -338,21 +361,113 @@ def write_delta_table_with_scd(
         raise
 
 
-def enrich_flights_data(
-    bronze_flights: DataFrame,
-):
-    departure_exploded_df = (
-        bronze_flights.select(
-            explode("departures").alias("data"),
-            "airport",
-            "ingestion_hour",
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    col, coalesce, concat_ws, explode, lit, lower, regexp_extract,
+    trim, when, xxhash64, length
+)
+
+def enrich_flights_data(bronze_flights: DataFrame) -> DataFrame:
+    """
+    Enrich the bronze flights data by adding SKs (airport, flight, airline, aircraft),
+    best scheduled time UTC, composite PK, and time zone info.
+
+    Args:
+        bronze_flights (DataFrame): The bronze flights data.
+
+    Returns:
+        DataFrame: Enriched flights DataFrame.
+    """
+
+    # --- Helper: build airport SK ---
+    def airport_sk(iata, icao, name):
+        return xxhash64(coalesce(iata, icao, lower(trim(name))))
+
+    # --- Helper: flatten and timestamp-transform ---
+    def preprocess(df, field):
+        exploded = df.select(explode(field).alias("data"), "airport", "ingestion_hour")
+        flat = flatten_df(exploded.select("data.*", "airport", "ingestion_hour"))
+        return transform_timestamps(flat)
+
+    # --- Departure flights ---
+    dep_df = preprocess(bronze_flights, "departures").withColumns({
+        "departure_airport_sk": xxhash64(col("airport")),
+        "arrival_airport_sk": airport_sk(
+            col("arrival_airport_iata"),
+            col("arrival_airport_icao"),
+            col("arrival_airport_name"),
+        ),
+    })
+
+    # --- Arrival flights ---
+    arr_df = preprocess(bronze_flights, "arrivals").withColumns({
+        "departure_airport_sk": airport_sk(
+            col("departure_airport_iata"),
+            col("departure_airport_icao"),
+            col("departure_airport_name"),
+        ),
+        "arrival_airport_sk": xxhash64(col("airport")),
+    })
+
+    # --- Common fields for both ---
+    def enrich_common(df):
+        return (
+            df.withColumn(
+                "best_scheduled_time_utc",
+                coalesce(col("departure_scheduled_time_utc"), col("arrival_scheduled_time_utc")),
+            )
+            .withColumn(
+                "flight_composite_pk",
+                concat_ws(
+                    "|",
+                    col("best_scheduled_time_utc"),
+                    col("number"),
+                    col("departure_airport_sk"),
+                    col("arrival_airport_sk"),
+                ),
+            )
+            .withColumn("flight_sk", xxhash64(col("flight_composite_pk")))
         )
+
+    dep_df = enrich_common(dep_df)
+    arr_df = enrich_common(arr_df)
+
+    # --- Merge and deduplicate ---
+    flights = dep_df.union(arr_df).dropDuplicates(["flight_sk"])
+
+    # --- Airline SK ---
+    airline_code = when(
+        (length(col("airline_name")).between(3, 4)) & col("airline_name").rlike("^[A-Z]+$"),
+        col("airline_name"),
+    ).otherwise(lower(trim(col("airline_name"))))
+
+    flights = flights.withColumn(
+        "airline_sk",
+        xxhash64(coalesce(col("airline_iata"), col("airline_icao"), airline_code)),
     )
 
-    arrival_exploded_df = (
-        bronze_flights.select(
-            explode("arrivals").alias("data"),
-            "airport",
-            "ingestion_hour",
-        )
-    )
+    # --- Aircraft SK + type ---
+    flights = flights.withColumns({
+        "aircraft_sk": xxhash64(
+            when(
+                col("aircraft_reg").isNull()
+                & col("aircraft_mode_s").isNull()
+                & col("aircraft_model").isNull(),
+                lit("UNKNOWN"),
+            ).otherwise(
+                coalesce(col("aircraft_reg"), col("aircraft_mode_s"), col("aircraft_model"))
+            )
+        ),
+        "aircraft_sk_type": when(col("aircraft_reg").isNotNull(), lit("reg"))
+        .when(col("aircraft_mode_s").isNotNull(), lit("mode_s"))
+        .when(col("aircraft_model").isNotNull(), lit("model"))
+        .otherwise(lit("unknown")),
+    })
+
+    # --- Time zone info ---
+    flights = flights.withColumns({
+        "dep_local_timezone": regexp_extract(col("departure_scheduled_time_local"), r"([+-]\d{2}:\d{2}|Z)$", 1),
+        "arr_local_timezone": regexp_extract(col("arrival_scheduled_time_local"), r"([+-]\d{2}:\d{2}|Z)$", 1),
+    })
+
+    return flights
