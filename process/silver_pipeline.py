@@ -34,6 +34,7 @@ def run_silver_pipeline(
     logging.info("="*50)
 
     # Create the silver database if not exists
+    spark.sql("DROP DATABASE IF EXISTS silver CASCADE")
     spark.sql("CREATE DATABASE IF NOT EXISTS silver")
 
     enriched_flights_df = None

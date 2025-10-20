@@ -45,20 +45,20 @@ def write_runways_data(
             xxhash64(col("airport_pk"))
         )
 
-        # Define the unknown runway data
-        unknown_runway = [
-            {"airport_sk": -1, "runway_name": "UNKNOWN", "true_heading": 0.0, "surface": "Unknown",
-            "has_lighting": False, "is_closed": False, "length_feet": 0.0, "width_feet": 0.0, "displaced_threshold_feet": 0.0,
-            "latitude": 0.0, "longitude": 0.0}
-        ]
+        # # Define the unknown runway data
+        # unknown_runway = [
+        #     {"airport_sk": -1, "runway_name": "UNKNOWN", "true_heading": 0.0, "surface": "Unknown",
+        #     "has_lighting": False, "is_closed": False, "length_feet": 0.0, "width_feet": 0.0, "displaced_threshold_feet": 0.0,
+        #     "latitude": 0.0, "longitude": 0.0}
+        # ]
 
-        # Create the unknown runway DataFrame
-        unknown_runway_df = spark.createDataFrame(unknown_runway)
+        # # Create the unknown runway DataFrame
+        # unknown_runway_df = spark.createDataFrame(unknown_runway)
 
         # Get the select expressions for the dim_runways table
         r_select_exprs = get_select_expressions("silver", "dim_runways")
         dim_runways = flattened_runways_df.select(*r_select_exprs)
-        dim_runways = dim_runways.unionByName(unknown_runway_df)
+        # dim_runways = dim_runways.unionByName(unknown_runway_df)
 
     except Exception as e:
         logging.error(f"Failed during transformation step for dim_runways: {e}", exc_info=True)

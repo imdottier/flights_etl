@@ -159,3 +159,67 @@ silver:
         alias: latitude
       - name: location_lon
         alias: longitude
+
+
+gold:
+  # ===================================================================
+  # FACT TABLE: fct_flights
+  # Purpose: Stores one record per observed flight instance.
+  # Grain: One row per flight instance.
+  # ===================================================================
+  fct_flights:
+    final_column_order:
+      # --- Keys ---
+      - name: fact_flight_id           # BIGSERIAL PRIMARY KEY, added by Postgres
+      - name: flight_composite_pk      # TEXT, Natural Key for upserts, must be UNIQUE
+      
+      # --- Foreign Keys to Dimension Tables ---
+      - name: flight_details_sk        # INT, FK to dim_flight_details
+      - name: quality_combo_sk         # INT, FK to dim_quality_combination
+      - name: departure_airport_sk
+      - name: arrival_airport_sk
+      - name: airline_sk
+      - name: aircraft_sk
+      - name: departure_runway_sk      # Note: Replaces NULLs with -1 before load
+      - name: arrival_runway_sk        # Note: Replaces NULLs with -1 before load
+      - name: departure_date_sk        # Assuming you will add this from dep_scheduled_at_utc
+      - name: arrival_date_sk          # Assuming you will add this from arr_scheduled_at_utc
+
+      # --- Degenerate Dimensions (High-cardinality attributes) ---
+      - name: flight_number
+      - name: flight_callsign
+      - name: dep_terminal
+      - name: dep_checkin_desk
+      - name: dep_gate
+      - name: dep_runway
+      - name: arr_terminal
+      - name: arr_gate
+      - name: arr_baggage_belt
+      - name: arr_runway
+      - name: dep_local_timezone
+      - name: arr_local_timezone
+
+      # --- Measures (Facts) ---
+      # Timestamps are often treated as measures/facts in a DW
+      - name: dep_scheduled_at_utc
+      - name: dep_revised_at_utc
+      - name: dep_runway_at_utc
+      - name: arr_scheduled_at_utc
+      - name: arr_revised_at_utc
+      - name: arr_runway_at_utc
+      - name: last_location_reported_at_utc
+      
+      # Location data as measures
+      - name: latitude
+      - name: longitude
+      - name: altitude_ft
+      - name: ground_speed_kts
+      - name: true_track_deg
+      
+      # Duration/Lag measures (calculated in the Gold ETL)
+      - name: duration_flight_minutes
+      - name: delay_departure_minutes
+      - name: delay_arrival_minutes
+
+      # --- Metadata for Lineage/Partitioning in Lakehouse ---
+      - name: ingestion_hour

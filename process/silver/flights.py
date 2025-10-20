@@ -41,20 +41,22 @@ def write_flights_data(
             how="left"
         )
 
-        # Get the unknown runway sk
-        unknown_runway_sk = silver_runways.filter(col("airport_sk") == -1).select("runway_sk").collect()[0]["runway_sk"]
+        # # Get the unknown runway sk
+        # unknown_runway_sk = silver_runways.filter(col("airport_sk") == -1).select("runway_sk").collect()[0]["runway_sk"]
 
         # Replace the null runway sk with the unknown runway sk
         fct_flights = fct_flights.withColumn(
             "departure_runway_sk",
-            coalesce(col("dep.runway_sk"), lit(unknown_runway_sk))
+            col("dep.runway_sk")
+            # coalesce(col("dep.runway_sk"), lit(unknown_runway_sk))
         ).withColumn(
             "arrival_runway_sk",
-            coalesce(col("arr.runway_sk"), lit(unknown_runway_sk))
+            col("arr.runway_sk")
+            # coalesce(col("arr.runway_sk"), lit(unknown_runway_sk))
         )
 
-        # Fill the null values of the runway sk with the unknown runway sk
-        fct_flights = fct_flights.fillna(unknown_runway_sk, subset=["departure_runway_sk", "arrival_runway_sk"])
+        # # Fill the null values of the runway sk with the unknown runway sk
+        # fct_flights = fct_flights.fillna(unknown_runway_sk, subset=["departure_runway_sk", "arrival_runway_sk"])
 
         # Get the select expressions for the fct_flights table
         fct_flights_select_exprs = get_select_expressions("silver", "fct_flights")

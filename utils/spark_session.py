@@ -21,7 +21,7 @@ def get_spark_session(app_name: str="Test Pipeline") -> SparkSession:
                     .config("spark.hadoop.validateOutputSpecs", "false")
                     .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.LocalFileSystem")
                     .config("spark.driver.memory", "4g")
-                    .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.0")
+                    .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3")
                     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
                     .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
                     .config("spark.ui.showConsoleProgress", "false")

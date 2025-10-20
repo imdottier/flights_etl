@@ -1,14 +1,6 @@
 import logging
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, coalesce
-
-from process.utils import write_delta_table, flatten_df
-from utils.expression_utils import get_select_expressions
-
-
-import logging
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, coalesce
+from pyspark.sql.functions import col, coalesce, first
 
 from process.utils import write_delta_table, flatten_df
 from utils.expression_utils import get_select_expressions
@@ -33,27 +25,36 @@ def write_airports_data(
         detailed_airports_df = flattened_airports_df.select(*detailed_airports_select_exprs)
 
         logging.info("Extracting basic airport list from flight data.")
-        arrival_airports_df = (
-            enriched_flights.select(
-                col("arrival_airport_sk").alias("airport_sk"),
-                col("arrival_airport_iata").alias("airport_iata"),
-                col("arrival_airport_icao").alias("airport_icao"),
-                col("arrival_airport_name").alias("airport_name"),
-                col("arrival_airport_time_zone").alias("airport_time_zone"),
-            )
+        departures = enriched_flights.select(
+            col("departure_airport_sk").alias("airport_sk"),
+            col("departure_airport_iata").alias("airport_iata"),
+            col("departure_airport_icao").alias("airport_icao"),
+            col("departure_airport_name").alias("airport_name"),
+            col("departure_airport_time_zone").alias("airport_time_zone")
         )
 
-        departure_airports_df = (
-            enriched_flights.select(
-                col("departure_airport_sk").alias("airport_sk"),
-                col("departure_airport_iata").alias("airport_iata"),
-                col("departure_airport_icao").alias("airport_icao"),
-                col("departure_airport_name").alias("airport_name"),
-                col("departure_airport_time_zone").alias("airport_time_zone"),
-            )
+        arrivals = enriched_flights.select(
+            col("arrival_airport_sk").alias("airport_sk"),
+            col("arrival_airport_iata").alias("airport_iata"),
+            col("arrival_airport_icao").alias("airport_icao"),
+            col("arrival_airport_name").alias("airport_name"),
+            col("arrival_airport_time_zone").alias("airport_time_zone")
         )
 
-        dim_airports_basic_df = departure_airports_df.unionByName(arrival_airports_df).drop_duplicates(["airport_sk"])
+        all_airports_long_df = departures.unionByName(arrivals)
+        all_airports_long_df = all_airports_long_df.filter(col("airport_sk").isNotNull())
+
+        # Get the most detailed info for each airport_sk
+        dim_airports_basic_df = (
+            all_airports_long_df
+            .groupBy("airport_sk")
+            .agg(
+                first("airport_iata", ignorenulls=True).alias("airport_iata"),
+                first("airport_icao", ignorenulls=True).alias("airport_icao"),
+                first("airport_name", ignorenulls=True).alias("airport_name"),
+                first("airport_time_zone", ignorenulls=True).alias("airport_time_zone")
+            )
+        )
 
         logging.info("Enriching basic airport list with detailed data.")
         enriched_df = dim_airports_basic_df.alias("basic").join(
