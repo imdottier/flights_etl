@@ -1,0 +1,13 @@
+version: 2
+sources:
+  - name: gold_layer
+    database: flights_dw
+    schema: gold
+    tables:
+      - name: fct_flights_intermediate
+      - name: dim_airports
+      - name: dim_airlines
+      - name: dim_aircrafts
+      - name: dim_runways
+      - name: dim_flight_details
+      - name: dim_quality_combination
