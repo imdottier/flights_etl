@@ -1,16 +1,21 @@
 import logging
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, coalesce, first
-
+from pyspark.sql.functions import (
+    col, coalesce, first, sha2, concat_ws, lit, lower, trim,
+    current_timestamp
+)
 from process.utils import write_delta_table, flatten_df
 from utils.expression_utils import get_select_expressions
+
+from datetime import datetime
 
 # Technically we dont need bronze_airports everytime and only 
 # on new API data, but for simplicity we will use it every time
 def write_airports_data(
     spark_session: SparkSession,
     bronze_airports: DataFrame,
-    enriched_flights: DataFrame
+    enriched_flights: DataFrame,
+    batch_time: datetime,
 ) -> None:
     """
     Writes the dim_airports table to a Delta table.
@@ -75,6 +80,23 @@ def write_airports_data(
             col("detailed.longitude"),
             col("detailed.elevation_feet"),
             coalesce(col("detailed.time_zone"), col("basic.airport_time_zone")).alias("airport_time_zone"),
+        )
+
+        # Add hashes and timestamps
+        data_cols = [c for c in dim_airports_df.columns if c != "airport_sk"]
+        dim_airports_df = (
+            dim_airports_df
+            .withColumn(
+                "_data_hash",
+                sha2(
+                    concat_ws(
+                        "|",
+                        *[lower(trim(col(c))) for c in data_cols]
+                    ),
+                256)
+            )
+            .withColumn("_ingested_at", lit(batch_time))
+            .withColumn("_inserted_at", current_timestamp())
         )
     
     except Exception as e:

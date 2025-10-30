@@ -3,3 +3,4 @@ pandas==2.3.3
 dotenv==0.9.9
 delta-spark==3.2.1
 pyarrow==21.0.0
+psycopg2-binary==2.9.11

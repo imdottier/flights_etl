@@ -20,7 +20,8 @@ import argparse
 def run_silver_pipeline(
     spark: SparkSession,
     ingestion_hours: list[str],
-    process_runways: bool = True
+    batch_time: datetime,
+    process_runways: bool = True,
 ) -> None:
     """
     Runs the bronze to silver pipeline.
@@ -61,9 +62,9 @@ def run_silver_pipeline(
         logging.info(f"Successfully cached {num_flights} enriched flight records.")
 
         # --- 3. Write Dimensions using the Cached DataFrame ---
-        write_aircrafts_data(spark, enriched_flights_df)
-        write_airlines_data(spark, enriched_flights_df)
-        write_airports_data(spark, bronze_airports_df, enriched_flights_df)
+        write_aircrafts_data(spark, enriched_flights_df, batch_time)
+        write_airlines_data(spark, enriched_flights_df, batch_time)
+        write_airports_data(spark, bronze_airports_df, enriched_flights_df, batch_time)
 
         # Only process runways when there's new data
         if process_runways:
@@ -71,13 +72,13 @@ def run_silver_pipeline(
             if bronze_airports_df is None:
                 logging.warning("Cannot process runways because bronze.airports data is missing. Skipping.")
             else:
-                write_runways_data(spark, bronze_airports_df)
+                write_runways_data(spark, bronze_airports_df, batch_time)
         else:
             logging.info("Skipping optional runway dimension processing as requested.")
 
         # --- 4. Write the Fact Table using the Cached DataFrame ---
         logging.info("Writing final fact table fct_flights...")
-        write_flights_data(spark, enriched_flights_df)
+        write_flights_data(spark, enriched_flights_df, batch_time)
 
     except Exception as e:
         logging.error(f"An unexpected error occurred in the silver pipeline: {e}", exc_info=True)

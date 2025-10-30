@@ -4,6 +4,8 @@ from pathlib import Path
 import logging
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import col, lit
+from datetime import datetime
 
 load_dotenv()
 
@@ -28,13 +30,20 @@ def write_json_to_bronze(data: dict, path: str, file_name: str):
         raise
 
 
-def read_df(spark: SparkSession, layer: str, table_name: str, **kwargs) -> DataFrame:
+def read_df(
+    spark: SparkSession, layer: str, table_name: str,
+    last_watermark: datetime = None, **kwargs
+) -> DataFrame:
     full_table_name = f"{layer}.{table_name}"
 
     try:
         df = spark.read.table(full_table_name)
-        if "where" in kwargs:
-            df = df.where(kwargs["where"])
+        if last_watermark:
+            df = df.filter(col("_inserted_at") > lit(last_watermark))
+        else:
+            if "where" in kwargs:
+                df = df.where(kwargs["where"])
+        
         logging.info(f"Successfully read {full_table_name}")
         return df
     

@@ -14,6 +14,7 @@ from crawler.run_crawl_pipeline import run_crawl_pipeline
 from process.bronze_pipeline import run_bronze_pipeline
 from process.silver_pipeline import run_silver_pipeline
 
+from load.publish_pipeline import run_publish_pipeline
 
 def run_full_pipeline(ingestion_hours: list[str], process_detailed_dims: bool, skip_crawl: bool):
     """
@@ -36,10 +37,17 @@ def run_full_pipeline(ingestion_hours: list[str], process_detailed_dims: bool, s
         run_bronze_pipeline(spark=spark, ingestion_hours=ingestion_hours, process_airports=process_detailed_dims)
         logging.info(">>> BRONZE STAGE COMPLETED. <<<")
 
+        batch_time = datetime.now(timezone.utc)
+        logging.info(f"Batch run at UTC time: {batch_time}")
+
         logging.info(">>> STAGE 3: SILVER <<<")
         # Use the same, clear flag name
-        run_silver_pipeline(spark=spark, ingestion_hours=ingestion_hours, process_runways=process_detailed_dims)
+        run_silver_pipeline(spark=spark, ingestion_hours=ingestion_hours, process_runways=process_detailed_dims, batch_time=batch_time)
         logging.info(">>> SILVER STAGE COMPLETED. <<<")
+
+        logging.info(">>> STAGE 4: PUBLISH <<<")
+        run_publish_pipeline(spark=spark, batch_time=batch_time)
+        logging.info(">>> PUBLISH STAGE COMPLETED. <<<")
 
     finally:
         # Ensure Spark is stopped even if a stage fails

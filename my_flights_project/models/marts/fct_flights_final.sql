@@ -1,5 +1,28 @@
-WITH intermediate_flights AS (
-    SELECT * FROM {{ source('gold_layer', 'fct_flights_intermediate') }}
+{{
+    config(
+        materialized='incremental',
+        unique_key='fact_flight_id'
+    )
+}}
+
+WITH watermarks AS (
+    SELECT * FROM {{ source('dwh_meta', '_dwh_watermarks') }}
+),
+
+intermediate_flights AS (
+    SELECT *
+    FROM {{ source('gold_layer', 'fct_flights_intermediate') }}
+    
+    {% if is_incremental() %}
+
+    WHERE
+        _inserted_at > (
+            SELECT last_inserted_at
+            FROM watermarks
+            WHERE table_name = 'silver.fct_flights'
+        )
+
+    {% endif %}
 ),
 
 dim_flight_details AS (
@@ -9,6 +32,9 @@ dim_flight_details AS (
 base AS (
     SELECT
         f.*,
+
+        TO_CHAR(f.dep_scheduled_at_utc, 'YYYYMMDD')::INT AS departure_date_key,
+        TO_CHAR(f.arr_scheduled_at_utc, 'YYYYMMDD')::INT AS arrival_date_key,
 
         -- === DERIVED MEASURES & FLAGS ===
         -- Durations (Robust against NULLs)
@@ -51,6 +77,7 @@ base AS (
 
 SELECT
     -- Pass-through Keys (assuming fact_flight_id is NOT in the intermediate table)
+    f.fact_flight_id,
     f.flight_composite_pk,
     f.flight_details_sk,
     f.departure_airport_sk,
@@ -60,6 +87,8 @@ SELECT
     f.departure_runway_sk,
     f.arrival_runway_sk,
     f.quality_combo_sk,
+    f.departure_date_key,
+    f.arrival_date_key,
 
     -- Pass-through Degenerate Dimensions
     f.flight_number,
@@ -95,13 +124,15 @@ SELECT
     -- === DERIVED MEASURES & FLAGS ===
     f.actual_duration_minutes - f.scheduled_duration_minutes AS schedule_variance_minutes,
     CASE
-        WHEN delay_arrival_minutes <= 15 THEN TRUE
-        ELSE FALSE
+        WHEN delay_arrival_minutes <= 15 THEN TRUE      -- The condition is met
+        WHEN delay_arrival_minutes > 15 THEN FALSE      -- The condition is not met
+        ELSE NULL                                        -- The data to evaluate the condition is missing
     END AS is_on_time,
 
     CASE
         WHEN delay_departure_minutes > 15 AND delay_arrival_minutes <= 15 THEN TRUE
-        ELSE FALSE
+        WHEN NOT (delay_departure_minutes > 15 AND delay_arrival_minutes <= 15) THEN FALSE
+        ELSE NULL
     END AS made_up_time_in_air,
 
     CASE
@@ -110,6 +141,8 @@ SELECT
     END AS is_cancelled,
     
     -- Metadata
+    f._ingested_at,
+    f._inserted_at,
     f.ingestion_hour
 
 FROM

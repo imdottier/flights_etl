@@ -1,143 +1,300 @@
 import logging
-import os
-from dotenv import load_dotenv
-from datetime import datetime
+import argparse
+from datetime import datetime, timezone
+from contextlib import contextmanager
+import functools
 
+import psycopg2
+from psycopg2 import sql
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col
+from pyspark.sql.functions import (
+    col, lit, current_timestamp, sha2, date_trunc, date_format, 
+    array_contains, format_string, max as spark_max, coalesce, lit, when
+)
+from delta.tables import DeltaTable
 
-from load.database import transaction_context
+from load.io_utils import (
+    load_table_to_postgres, read_df_from_postgres,
+    write_watermarks
+)
+from utils.io_utils import read_df
+from utils.expression_utils import get_select_expressions
 
-load_dotenv()
+from sql.utils import get_sql
 
-POSTGRE_DB_NAME = os.getenv("POSTGRE_DB_NAME")
-POSTGRE_DB_USER = os.getenv("POSTGRE_DB_USER")
-POSTGRE_DB_PASSWORD = os.getenv("POSTGRE_DB_PASSWORD")
-POSTGRE_DB_HOST = os.getenv("POSTGRE_DB_HOST")
-
-
-pg_url = f"jdbc:postgresql://{POSTGRE_DB_HOST}/{POSTGRE_DB_NAME}"
-pg_properties = {
-    "user": POSTGRE_DB_USER,
-    "password": POSTGRE_DB_PASSWORD,
-    "driver": "org.postgresql.Driver"
-}
+# ==============================================================================
+# 2. PIPELINE-SPECIFIC HELPER FUNCTIONS
+# ==============================================================================
 
 
-def load_table_to_postgres(df: DataFrame, table_name: str):
-    df.write \
-        .format("jdbc") \
-        .option("url", f"jdbc:postgresql://{POSTGRE_DB_HOST}/{POSTGRE_DB_NAME}") \
-        .option("dbtable", table_name) \
-        .option("user", POSTGRE_DB_USER) \
-        .option("password", POSTGRE_DB_PASSWORD) \
-        .option("driver", "org.postgresql.Driver") \
-        .mode("append") \
-        .save()
-    
-
-def load_to_postgres(
+def read_fact_data_for_overwrite(
     spark: SparkSession,
-    df: DataFrame,
+    target_schema: str,
     target_table: str,
-    strategy: str,
-    pk_cols: list[str] | None = None,
-    partition_key_col: str | None = None, 
-    confirm_truncate: bool = False,
-    cursor=None,
-):
-    # --- 1. Input Validation ---
-    if strategy == "upsert" and not pk_cols:
-        raise ValueError("pk_cols is required for 'upsert' strategy.")
-    if strategy == "delete_insert" and not partition_key_col:
-        raise ValueError("partition_key_col is required for 'delete_insert' strategy.")
-    if strategy == "truncate_insert" and not confirm_truncate:
-        raise ValueError(
-            "The 'truncate_insert' strategy is destructive. "
-            "You must explicitly pass `confirm_truncate=True` to proceed."
-        ) 
-
-    temp_table_name = f"temp_{target_table}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
-    try:
-        # --- 2. Write to Temporary Table ---
-        logging.info(f"Writing to temp table: {temp_table_name}...")
-        df.write.jdbc(url=pg_url, table=temp_table_name, mode="overwrite", properties=pg_properties)
-        logging.info(f"Successfully wrote to temporary table.")
-
-        all_columns = ", ".join(f'"{c}"' for c in df.columns)
-
-        with transaction_context(cursor) as cur:
-            # --- 3. Merge into Target Table ---
-            if strategy == "upsert":
-                pk_columns_str = ", ".join(f'"{c}"' for c in pk_cols)
-                update_set_str = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in df.columns if col not in pk_cols])
-
-                if not update_set_str:
-                    merge_sql = f"""
-                        INSERT INTO {target_table} ({all_columns})
-                        SELECT {all_columns} FROM {temp_table_name}
-                        ON CONFLICT ({pk_columns_str}) DO NOTHING
-                    """
-                else:
-                    merge_sql = f"""
-                        INSERT INTO {target_table} ({all_columns})
-                        SELECT {all_columns} FROM {temp_table_name}
-                        ON CONFLICT ({pk_columns_str}) DO UPDATE SET
-                            {update_set_str};
-                    """
-
-                logging.info(f"Executing merge SQL from {temp_table_name} to {target_table}...")
-                cur.execute(merge_sql)
-                logging.info("Merge operation complete.")
-
-            elif strategy == "delete_insert":
-                partition_values = tuple([row[0] for row in df.select(partition_key_col).distinct().collect()])
-
-                delete_sql = f"DELETE FROM {target_table} WHERE {partition_key_col} IN %s;"
-                insert_sql = f"INSERT INTO {target_table} ({all_columns}) SELECT {all_columns} FROM {temp_table_name};"
-
-                logging.info(f"Executing delete for partitions in {target_table}...")
-                # Pass the values as the second argument to execute()
-                cur.execute(delete_sql, (partition_values,))
-                logging.info(f"Deleted {cur.rowcount} rows. Now inserting new data...")
-                cur.execute(insert_sql)
-                logging.info(f"Inserted {cur.rowcount} rows. Transaction complete.")
-
-            elif strategy == "truncate_insert":
-                logging.warning("Truncate_insert is dangerous. Use with caution.")
-
-                sql_transaction = f"""
-                    TRUNCATE TABLE {target_table};
-                    INSERT INTO {target_table} SELECT * FROM {temp_table_name};
-                    SELECT {all_columns} FROM {temp_table_name};
-                """
-
-                logging.info(f"Executing SQL transaction from {temp_table_name} to {target_table}...")
-                cur.execute(sql_transaction)
-                logging.info("Transaction complete.")
-
-    finally:
-        logging.info(f"Dropping temporary table {temp_table_name}...")
-        try:
-            with transaction_context(cursor) as cur:
-                cur.execute(f"DROP TABLE IF EXISTS {temp_table_name};")
-            logging.info("Temporary table dropped successfully.")
-        except Exception as e:
-            logging.error(f"Failed to drop temporary table {temp_table_name}: {e}", exc_info=True)
-
-
-def read_df_from_postgres(
-    spark: SparkSession,
-    table_name: str
-) -> DataFrame:
-    logging.info(f"Reading {table_name} from Postgres...")
-
-    try:
-        df = spark.read.jdbc(url=pg_url, table=table_name, properties=pg_properties)
-        logging.info(f"Successfully read {df.count()} rows from {table_name}")
-        return df
+    last_watermark: datetime
+) -> DataFrame | None:
+    """
+    Performs a highly efficient, multi-step read on a partitioned Delta table.
     
-    except Exception as e:
-        logging.error(f"Error reading {table_name}: {e}", exc_info=True)
-        raise
+    1. Scans recent partitions to find which `ingestion_hour`s contain new data.
+    2. Uses that list to read only the necessary partitions.
+    3. Identifies the full set of business-date partitions to be overwritten.
+    4. Reads all data from the SSoT for those business-date partitions.
+
+    Returns a DataFrame containing the full data for all partitions to be overwritten.
+    """
+    
+    silver_table_name = f"{target_schema}.{target_table}"
+    logging.info(f"Starting efficient read for partitioned table {silver_table_name}...")
+
+    # --- Step 1: Partition Discovery ---
+    # Find which `ingestion_hour` partitions contain data newer than our watermark.
+    # This query is fast because Delta can prune partitions based on metadata (_inserted_at stats).
+    logging.info(f"  - Step 1: Discovering new ingestion_hour partitions since {last_watermark}...")
+    
+    new_ingestion_hours_df = read_df(spark, target_schema, target_table) \
+        .where(col("_inserted_at") > lit(last_watermark)) \
+        .select("ingestion_hour") \
+        .distinct()
+
+    if new_ingestion_hours_df.rdd.isEmpty():
+        logging.info("  - No new data found based on watermark. Skipping.")
+        return None
+
+    new_ingestion_hours = [row.ingestion_hour for row in new_ingestion_hours_df.collect()]
+    logging.info(f"  - Found new data in ingestion_hour partitions: {new_ingestion_hours}")
+
+    # --- Step 2: Read ONLY the relevant partitions from Silver ---
+    # This is now a highly efficient read, not a full table scan.
+    logging.info("  - Step 2: Reading only the affected partitions...")
+    
+    incremental_df = read_df(spark, target_schema, target_table) \
+        .where(col("ingestion_hour").isin(new_ingestion_hours))
+    
+    # --- Step 3: From this data, identify the full BUSINESS partitions to reload ---
+    # This logic is the same as before, but it operates on a much smaller DataFrame.
+    logging.info("  - Step 3: Identifying affected business-date partitions...")
+    partition_key_col = coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
+    
+    affected_dates_df = incremental_df.select(
+        date_trunc("day", partition_key_col).alias("flight_date")
+    ).distinct()
+
+    dates_to_reload = [row.flight_date for row in affected_dates_df.collect()]
+    logging.info(f"  - Business dates to be fully reloaded: {[d.strftime('%Y-%m-%d') for d in dates_to_reload if d]}")
+
+    if not dates_to_reload:
+        logging.warning("  - New data was found, but it didn't map to any valid flight dates. Skipping.")
+        return None
+
+    # --- Step 4: Go back and read the full data for the business partitions ---
+    # This step still scans more than just the incremental partitions, but it's now
+    # scoped to only the affected business dates, which is a massive improvement.
+    logging.info("  - Step 4: Reading full data for affected business partitions from SSoT...")
+    
+    full_fct_df = read_df(spark, target_schema, target_table).withColumn(
+        "flight_date", date_trunc("day", partition_key_col)
+    )
+
+    df_to_load = full_fct_df.where(col("flight_date").isin(dates_to_reload))
+    
+    # We must also include the new watermark value for the final update step.
+    # It's more efficient to calculate it here from the small incremental_df.
+    new_watermark = incremental_df.agg(max("_inserted_at")).first()[0]
+
+    logging.info(f"  - Successfully prepared {df_to_load.count()} rows for overwrite. New watermark is {new_watermark}.")
+    
+    # Return both the data and the new watermark
+    return df_to_load, new_watermark
+
+
+def read_silver_layer_data(spark: SparkSession, watermarks: dict[str, datetime]) -> dict[str, DataFrame]:
+    """Reads all necessary tables from the Silver layer and returns them in a dictionary."""
+
+    last_watermarks = {
+        key: watermarks.get(f"silver.{key}", datetime(1970, 1, 1, tzinfo=timezone.utc))
+        for key in ["dim_airports", "dim_runways", "dim_airlines", "dim_aircrafts", "fct_flights"]
+    }
+
+    # Read data from Silver
+    dim_airports = read_df(spark, "silver", "dim_airports").drop("_data_hash")
+    dim_runways = read_df(spark, "silver", "dim_runways").drop("_data_hash")
+    dim_airlines = read_df(spark, "silver", "dim_airlines").drop("_data_hash")
+    dim_aircrafts = read_df(spark, "silver", "dim_aircrafts").drop("_data_hash")
+    fct_flights = read_df(spark, "silver", "fct_flights", last_watermarks["fct_flights"])  # already clean
+
+    affected_dates_df = fct_flights.withColumn(
+        "flight_date",
+        date_format(
+            date_trunc(
+                "day",
+                coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
+            ),
+            "yyyy-MM-dd"
+        )
+    ).distinct()
+
+    dates_to_reload = [row.flight_date for row in affected_dates_df.collect()]
+
+    return {
+        "dim_airports": dim_airports,
+        "dim_runways": dim_runways,
+        "dim_airlines": dim_airlines,
+        "dim_aircrafts": dim_aircrafts,
+        "fct_flights": fct_flights,
+    }
+
+
+def create_derived_dimensions(silver_flights_df: DataFrame, batch_time) -> dict[str, DataFrame]:
+    """Creates the junk and combination dimension DataFrames from the fact data."""
+    logging.info("Synthesizing dim_flight_details...")
+    dim_flight_details_df = silver_flights_df.select(
+        "flight_status", "codeshare_status", "is_cargo"
+    ).distinct()
+
+    dim_flight_details_df = dim_flight_details_df.withColumn( # Add the metadata columns
+        "_ingested_at", lit(batch_time)
+    ).withColumn(
+        "_inserted_at", current_timestamp()
+    )
+
+    logging.info("Synthesizing dim_quality_combination...")
+    dim_quality_combination_df = silver_flights_df.select(
+        array_contains("dep_quality", "Basic").alias("dep_has_basic"),
+        array_contains("dep_quality", "Live").alias("dep_has_live"),
+        array_contains("arr_quality", "Basic").alias("arr_has_basic"),
+        array_contains("arr_quality", "Live").alias("arr_has_live"),
+    ).distinct()
+
+    dim_quality_combination_df = dim_quality_combination_df.withColumn(
+        "quality_desc",
+        format_string(
+            "Dep B:%s L:%s, Arr B:%s L:%s",
+            col("dep_has_basic"), col("dep_has_live"),
+            col("arr_has_basic"), col("arr_has_live")
+        )
+    ).withColumn( # Add the metadata columns
+        "_ingested_at", lit(batch_time)
+    ).withColumn(
+        "_inserted_at", current_timestamp()
+    )
+    
+    return {
+        "dim_flight_details": dim_flight_details_df,
+        "dim_quality_combination": dim_quality_combination_df
+    }
+    
+
+def get_unknown_record_sql(table_name: str) -> str:
+    """Returns the SQL to insert the 'Unknown' record for a given dimension table."""
+    if table_name == "dim_airports":
+        insert_sql = get_sql("dim_airports.sql")
+        return insert_sql
+    if table_name == "dim_runways":
+        insert_sql = get_sql("dim_runways.sql")
+        return insert_sql
+    # Add other 'Unknown' records for other dimensions as needed
+    return "" # Return empty string if no unknown record is defined
+
+
+def load_dimensions(spark: SparkSession, cursor, dims_to_load: dict[str, DataFrame]):
+    """Loads multiple dimension tables and their 'Unknown' records within a single transaction."""
+    dim_configs = {
+        "dim_airports": {"pk": ["airport_sk"]},
+        "dim_airlines": {"pk": ["airline_sk"]},
+        "dim_aircrafts": {"pk": ["aircraft_sk"]},
+        "dim_runways": {"pk": ["runway_version_key"]},
+        "dim_flight_details": {"pk": ["flight_status", "codeshare_status", "is_cargo"]},
+        "dim_quality_combination": {"pk": ["dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"]},
+    }
+
+    for name, df in dims_to_load.items():
+        if name in dim_configs:
+            logging.info(f"Loading dimension: {name}")
+            load_table_to_postgres(
+                spark=spark, df=df, target_schema="gold", target_table=name,
+                strategy="upsert", pk_cols=dim_configs[name]["pk"], cursor=cursor
+            )
+            unknown_sql = get_unknown_record_sql(name)
+            if unknown_sql:
+                cursor.execute(unknown_sql)
+
+
+def enrich_facts_with_dw_keys(spark: SparkSession, silver_flights_df: DataFrame) -> DataFrame:
+    """Performs the full transformation of the silver fact data to the gold, load-ready state."""
+    logging.info("Reading dimension lookup tables from data warehouse...")
+    quality_lookup_df = read_df_from_postgres(spark, "gold", "dim_quality_combination")
+    flight_details_lookup_df = read_df_from_postgres(spark, "gold", "dim_flight_details")
+
+    logging.info("Enriching fact data with new dimension keys...")
+    fct_flights_df = silver_flights_df.withColumn(
+        "dep_has_basic", array_contains(col("dep_quality"), "Basic")
+    ).withColumn(
+        "dep_has_live", array_contains(col("dep_quality"), "Live")
+    ).withColumn(
+        "arr_has_basic", array_contains(col("arr_quality"), "Basic")
+    ).withColumn(
+        "arr_has_live", array_contains(col("arr_quality"), "Live")
+    )
+
+    fct_flights_df = fct_flights_df.join(
+        flight_details_lookup_df.select("flight_details_sk", "flight_status", "codeshare_status", "is_cargo"),
+        on=["flight_status", "codeshare_status", "is_cargo"], how="left"
+    ).join(
+        quality_lookup_df.select("quality_combo_sk", "dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"),
+        on=["dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"], how="left"
+    )
+
+    # Coalesce NULL foreign keys to -1
+    # Fill numeric keys
+    fct_flights_df = fct_flights_df.fillna({
+        "flight_details_sk": -1,
+        "quality_combo_sk": -1
+    })
+
+    # Fill SHA2 text keys
+    fct_flights_df = (
+        fct_flights_df
+        .withColumn("departure_runway_version_key", when(col("departure_runway_version_key").isNull(), sha2(lit("-1"), 256)).otherwise(col("departure_runway_version_key")))
+        .withColumn("arrival_runway_version_key", when(col("arrival_runway_version_key").isNull(), sha2(lit("-1"), 256)).otherwise(col("arrival_runway_version_key")))
+    )
+
+    # For partitioning by month
+    fct_flights_df = fct_flights_df.withColumn(
+        "flight_month",
+        date_format(
+            date_trunc(
+                "month",
+                coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
+            ),
+            "yyyy-MM-01"
+        )
+    )
+
+    select_exprs = get_select_expressions("gold", "fct_flights_intermediate")
+    final_df = fct_flights_df.select(*select_exprs)
+
+    return final_df
+
+
+def calculate_new_watermarks(spark: SparkSession, source_dfs: dict[str, DataFrame]) -> dict[str, datetime]:
+    """
+    Calculates the maximum _inserted_at timestamp for each DataFrame in the input dictionary.
+    
+    Returns:
+        A dictionary mapping the full table identifier (e.g., 'silver.dim_airports') 
+        to its new high-watermark timestamp.
+    """
+    new_watermarks = {}
+    logging.info("Calculating new watermarks from processed DataFrames...")
+    for table_name, df in source_dfs.items():
+        if not df.rdd.isEmpty():
+            table_identifier = f"silver.{table_name}"
+            
+            # This is the Spark computation
+            new_max = df.agg(spark_max("_inserted_at")).first()[0]
+            
+            if new_max:
+                new_watermarks[table_identifier] = new_max
+                logging.info(f"  - New watermark for {table_identifier}: {new_max}")
+    return new_watermarks

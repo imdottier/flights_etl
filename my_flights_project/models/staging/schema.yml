@@ -11,3 +11,9 @@ sources:
       - name: dim_runways
       - name: dim_flight_details
       - name: dim_quality_combination
+
+  - name: dwh_meta
+    database: flights_dw
+    schema: dwh_meta
+    tables:
+      - name: _dwh_watermarks

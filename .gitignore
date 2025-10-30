@@ -16,7 +16,7 @@ derby.log
 note.txt
 
 logs/
-target/
-**/example/
 
-sandbox.ipynb
+target/
+dbt_packages/
+**/example/

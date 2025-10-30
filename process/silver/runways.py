@@ -1,13 +1,19 @@
 import logging
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, explode, xxhash64
+from pyspark.sql.functions import (
+    col, explode, sha2, concat_ws, lower, trim,
+    lit, current_timestamp
+)
 
 from process.utils import write_delta_table_with_scd, flatten_df
 from utils.expression_utils import get_select_expressions
+from datetime import datetime
+
 
 def write_runways_data(
     spark: SparkSession,
-    bronze_airports: DataFrame
+    bronze_airports: DataFrame,
+    batch_time: datetime
 ) -> None:
     """
     Process the runways data from the bronze_airports table and write it to the dim_runways table.
@@ -42,7 +48,7 @@ def write_runways_data(
         # Add the airport_sk column
         flattened_runways_df = flattened_runways_df.withColumn(
             "airport_sk",
-            xxhash64(col("airport_pk"))
+            sha2(lower(trim(col("airport_pk"))), 256)
         )
 
         # # Define the unknown runway data
@@ -55,16 +61,35 @@ def write_runways_data(
         # # Create the unknown runway DataFrame
         # unknown_runway_df = spark.createDataFrame(unknown_runway)
 
+        data_cols = [
+            c for c in flattened_runways_df.columns
+            if c not in ["airport_sk", "true_heading", "latitude", "longitude"]
+        ]
+        flattened_runways_df = (
+            flattened_runways_df
+            .withColumn(
+                "_data_hash",
+                sha2(
+                    concat_ws(
+                        "|",
+                        *[lower(trim(col(c))) for c in data_cols]
+                    ),
+                256)
+            )
+            .withColumn("_ingested_at", lit(batch_time))
+            .withColumn("_inserted_at", current_timestamp())
+        )
+
         # Get the select expressions for the dim_runways table
-        r_select_exprs = get_select_expressions("silver", "dim_runways")
-        dim_runways = flattened_runways_df.select(*r_select_exprs)
+        select_exprs = get_select_expressions("silver", "dim_runways")
+        dim_runways = flattened_runways_df.select(*select_exprs)
         # dim_runways = dim_runways.unionByName(unknown_runway_df)
 
     except Exception as e:
         logging.error(f"Failed during transformation step for dim_runways: {e}", exc_info=True)
         raise
 
-    try:
+    try:    
         logging.info(f"Writing {dim_runways.count()} records to dim_runways table")
         write_delta_table_with_scd(
             spark=spark,
@@ -72,7 +97,8 @@ def write_runways_data(
             db_name="silver",
             table_name="dim_runways",
             business_keys=["airport_sk", "true_heading", "latitude", "longitude"],
-            surrogate_key="runway_sk"
+            surrogate_key="runway_sk",
+            surrogate_key_version="runway_version_key"
         )
         logging.info("Successfully wrote dim_runways into Delta table")
     except Exception as e:

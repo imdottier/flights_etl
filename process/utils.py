@@ -9,7 +9,7 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     pandas_udf, col, coalesce, to_timestamp, explode,
     sha2, concat_ws, current_timestamp, xxhash64, lit,
-    lower, trim, when, length, regexp_extract
+    lower, trim, when, length, regexp_extract, sha2
 )
 import functools
 from pyspark.sql.types import StructType,  StringType
@@ -233,8 +233,11 @@ def write_delta_table(
             
             delta_table.alias("target").merge(
                 df.alias("source"), merge_condition
-            ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-
+            ).whenMatchedUpdate(
+                condition = "target._data_hash <> source._data_hash",
+                set = {**{col: f"source.{col}" for col in df.columns}}
+            ).whenNotMatchedInsertAll().execute()
+            
         else:
             raise ValueError(f"Invalid write_mode '{write_mode}'. Must be 'overwrite_table', 'overwrite_partitions', or 'merge'.")
 
@@ -252,9 +255,10 @@ def write_delta_table_with_scd(
     table_name: str,
     business_keys: list[str],
     surrogate_key: str,
+    surrogate_key_version: str,
 ):
     full_table_name = f"{db_name}.{table_name}"
-    table_path = f"/home/dottier/flights_etl/{db_name}/{table_name}"
+    table_path = f"{base}/{db_name}/{table_name}"
 
     if not business_keys or surrogate_key is None:
         raise ValueError("Business keys and surrogate key must be provided for SCD Type 2 merge.")
@@ -274,7 +278,8 @@ def write_delta_table_with_scd(
             )
 
             df = df.select(
-                xxhash64(concat_ws("|", *business_keys, now)).alias(surrogate_key),
+                sha2(concat_ws("|", *business_keys, now), 256).alias(surrogate_key_version),
+                sha2(concat_ws("|", *business_keys), 256).alias(surrogate_key),
                 *df.columns,
             )
             
@@ -290,18 +295,11 @@ def write_delta_table_with_scd(
         target_table = DeltaTable.forName(spark, full_table_name)
 
         non_key_columns = [col for col in df.columns if col not in business_keys]
-        source_df_with_hash = df.withColumn(
-            "row_hash",
-            sha2(concat_ws("|", *non_key_columns), 256)
-        )
+        source_df = df
 
-        target_df_with_hash = (
+        target_df = (
             target_table.toDF()
             .filter(col("effective_end_date").isNull())
-            .withColumn(
-                "row_hash",
-                sha2(concat_ws("|", *non_key_columns), 256)
-            )
         )
 
         join_condition = [
@@ -309,30 +307,32 @@ def write_delta_table_with_scd(
         ]
         final_join_condition = functools.reduce(lambda x, y: x & y, join_condition) if join_condition else None
 
-        staging_df = source_df_with_hash.alias("source").join(
-            target_df_with_hash.alias("target"),
+        staging_df = source_df.alias("source").join(
+            target_df.alias("target"),
             on=final_join_condition,
             how="left"
         ).select(
             "source.*",
             col(f"target.{surrogate_key}").alias("existing_sk"),
-            col("target.row_hash").alias("existing_hash")
+            col(f"target.{surrogate_key_version}").alias("existing_sk_version"),
+            col("target._data_hash").alias("existing_hash")
         )
 
         expired_records = (
             staging_df
-            .filter((col("existing_sk").isNotNull()) & (col("existing_hash") != col("row_hash")))
+            .filter((col("existing_sk").isNotNull()) & (col("existing_hash") != col("_data_hash")))
             .select(
-                col("existing_sk").alias(surrogate_key),
+                col("existing_sk_version").alias(surrogate_key_version),
                 now.alias("effective_end_date")
             )
         )
 
         new_records = (
             staging_df
-            .filter((col("existing_sk").isNull()) | (col("existing_hash") != col("row_hash")))
+            .filter((col("existing_sk").isNull()) | (col("existing_hash") != col("_data_hash")))
             .select(
-                xxhash64(concat_ws("||", *business_keys)).alias(surrogate_key),
+                sha2(concat_ws("||", *business_keys, now), 256).alias(surrogate_key_version),
+                sha2(concat_ws("||", *business_keys), 256).alias(surrogate_key),
                 *df.columns,
                 now.alias("effective_start_date"),
                 lit(None).cast("timestamp").alias("effective_end_date")
@@ -345,7 +345,7 @@ def write_delta_table_with_scd(
             target_table.alias("target")
             .merge(
                 final_change_set.alias("source"),
-                condition=f"target.{surrogate_key} = source.{surrogate_key}"
+                condition=f"target.{surrogate_key_version} = source.{surrogate_key_version}"
             )
             .whenNotMatchedInsertAll()
             .whenMatchedUpdate(
@@ -360,12 +360,121 @@ def write_delta_table_with_scd(
         logging.error(f"FATAL: Failed during WRITE phase for '{full_table_name}'. Error: {e}", exc_info=True)
         raise
 
+# def write_delta_table_with_scd(
+#     spark: SparkSession,
+#     df: DataFrame,
+#     db_name: str,
+#     table_name: str,
+#     business_keys: list[str],
+#     surrogate_key: str,
+# ):
+#     full_table_name = f"{db_name}.{table_name}"
+#     table_path = f"{base}/{db_name}/{table_name}"
 
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import (
-    col, coalesce, concat_ws, explode, lit, lower, regexp_extract,
-    trim, when, xxhash64, length
-)
+#     if not business_keys or surrogate_key is None:
+#         raise ValueError("Business keys and surrogate key must be provided for SCD Type 2 merge.")
+
+#     logging.info(f"--- Preparing to write to Delta table: {full_table_name} ---")
+
+#     now = current_timestamp()
+
+#     try:
+#         if not spark.catalog.tableExists(full_table_name):
+#             logging.info(f"Table {full_table_name} does not exist. Creating new Delta table.")
+
+#             df = df.withColumn(
+#                 "effective_start_date", now
+#             ).withColumn(
+#                 "effective_end_date", lit(None).cast("timestamp")
+#             )
+
+#             df = df.select(
+#                 xxhash64(concat_ws("|", *business_keys, now)).alias(surrogate_key),
+#                 *df.columns,
+#             )
+            
+#             df.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(table_path)
+
+#             logging.info(f"Registering Delta table {full_table_name} at location {table_path}.")
+#             spark.sql(f"CREATE TABLE {full_table_name} USING DELTA LOCATION '{table_path}'")
+#             logging.info(f"Table {full_table_name} created successfully.")
+
+#             return
+        
+#         logging.info(f"Table {full_table_name} exists. Performing SCD Type 2 merge.")
+#         target_table = DeltaTable.forName(spark, full_table_name)
+
+#         non_key_columns = [col for col in df.columns if col not in business_keys]
+#         source_df_with_hash = df.withColumn(
+#             "row_hash",
+#             sha2(concat_ws("|", *non_key_columns), 256)
+#         )
+
+#         target_df_with_hash = (
+#             target_table.toDF()
+#             .filter(col("effective_end_date").isNull())
+#             .withColumn(
+#                 "row_hash",
+#                 sha2(concat_ws("|", *non_key_columns), 256)
+#             )
+#         )
+
+#         join_condition = [
+#             col(f"source.{key}") == col(f"target.{key}") for key in business_keys
+#         ]
+#         final_join_condition = functools.reduce(lambda x, y: x & y, join_condition) if join_condition else None
+
+#         staging_df = source_df_with_hash.alias("source").join(
+#             target_df_with_hash.alias("target"),
+#             on=final_join_condition,
+#             how="left"
+#         ).select(
+#             "source.*",
+#             col(f"target.{surrogate_key}").alias("existing_sk"),
+#             col("target.row_hash").alias("existing_hash")
+#         )
+
+#         expired_records = (
+#             staging_df
+#             .filter((col("existing_sk").isNotNull()) & (col("existing_hash") != col("row_hash")))
+#             .select(
+#                 col("existing_sk").alias(surrogate_key),
+#                 now.alias("effective_end_date")
+#             )
+#         )
+
+#         new_records = (
+#             staging_df
+#             .filter((col("existing_sk").isNull()) | (col("existing_hash") != col("row_hash")))
+#             .select(
+#                 xxhash64(concat_ws("||", *business_keys)).alias(surrogate_key),
+#                 *df.columns,
+#                 now.alias("effective_start_date"),
+#                 lit(None).cast("timestamp").alias("effective_end_date")
+#             )
+#         )
+
+#         final_change_set = new_records.unionByName(expired_records, allowMissingColumns=True)
+
+#         (
+#             target_table.alias("target")
+#             .merge(
+#                 final_change_set.alias("source"),
+#                 condition=f"target.{surrogate_key} = source.{surrogate_key}"
+#             )
+#             .whenNotMatchedInsertAll()
+#             .whenMatchedUpdate(
+#                 set={"effective_end_date": "source.effective_end_date"}
+#             )
+#             .execute()
+#         )
+
+#         logging.info(f"SCD Type 2 merge into {full_table_name} completed successfully.")
+
+#     except Exception as e:
+#         logging.error(f"FATAL: Failed during WRITE phase for '{full_table_name}'. Error: {e}", exc_info=True)
+#         raise
+
 
 def enrich_flights_data(bronze_flights: DataFrame) -> DataFrame:
     """
@@ -381,7 +490,7 @@ def enrich_flights_data(bronze_flights: DataFrame) -> DataFrame:
 
     # --- Helper: build airport SK ---
     def airport_sk(iata, icao, name):
-        return xxhash64(coalesce(iata, icao, lower(trim(name))))
+        return sha2(lower(trim(coalesce(iata, icao, name))), 256)
 
     # --- Helper: flatten and timestamp-transform ---
     def preprocess(df, field):
@@ -391,7 +500,7 @@ def enrich_flights_data(bronze_flights: DataFrame) -> DataFrame:
 
     # --- Departure flights ---
     dep_df = preprocess(bronze_flights, "departures").withColumns({
-        "departure_airport_sk": xxhash64(col("airport")),
+        "departure_airport_sk": sha2(lower(trim(col("airport"))), 256),
         "arrival_airport_sk": airport_sk(
             col("arrival_airport_iata"),
             col("arrival_airport_icao"),
@@ -406,7 +515,7 @@ def enrich_flights_data(bronze_flights: DataFrame) -> DataFrame:
             col("departure_airport_icao"),
             col("departure_airport_name"),
         ),
-        "arrival_airport_sk": xxhash64(col("airport")),
+        "arrival_airport_sk": sha2(lower(trim(col("airport"))), 256),
     })
 
     # --- Common fields for both ---
@@ -426,7 +535,7 @@ def enrich_flights_data(bronze_flights: DataFrame) -> DataFrame:
                     col("arrival_airport_sk"),
                 ),
             )
-            .withColumn("flight_sk", xxhash64(col("flight_composite_pk")))
+            .withColumn("flight_sk", sha2(col("flight_composite_pk"), 256))
         )
 
     dep_df = enrich_common(dep_df)
@@ -443,20 +552,23 @@ def enrich_flights_data(bronze_flights: DataFrame) -> DataFrame:
 
     flights = flights.withColumn(
         "airline_sk",
-        xxhash64(coalesce(col("airline_iata"), col("airline_icao"), airline_code)),
+        sha2(lower(trim(coalesce(col("airline_iata"), col("airline_icao"), airline_code))), 256),
     )
 
     # --- Aircraft SK + type ---
     flights = flights.withColumns({
-        "aircraft_sk": xxhash64(
-            when(
-                col("aircraft_reg").isNull()
-                & col("aircraft_mode_s").isNull()
-                & col("aircraft_model").isNull(),
-                lit("UNKNOWN"),
-            ).otherwise(
-                coalesce(col("aircraft_reg"), col("aircraft_mode_s"), col("aircraft_model"))
-            )
+        "aircraft_sk": sha2(
+            lower(trim(
+                when(
+                    col("aircraft_reg").isNull()
+                    & col("aircraft_mode_s").isNull()
+                    & col("aircraft_model").isNull(),
+                    lit("unknown")
+                ).otherwise(
+                    coalesce(col("aircraft_reg"), col("aircraft_mode_s"), col("aircraft_model"))
+                )
+            )),
+            256
         ),
         "aircraft_sk_type": when(col("aircraft_reg").isNotNull(), lit("reg"))
         .when(col("aircraft_mode_s").isNotNull(), lit("mode_s"))
