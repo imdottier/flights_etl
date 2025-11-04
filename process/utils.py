@@ -9,7 +9,7 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     pandas_udf, col, coalesce, to_timestamp, explode,
     sha2, concat_ws, current_timestamp, xxhash64, lit,
-    lower, trim, when, length, regexp_extract, sha2
+    lower, trim, when, length, regexp_extract,
 )
 import functools
 from pyspark.sql.types import StructType,  StringType
@@ -42,7 +42,6 @@ def json_to_df(
         DataFrame: The DataFrame read from the given path.
     """
     base_path = BRONZE_RAW_BASE / table_name
-    print(base_path)
 
     if ingestion_hours:
         # Read selected hours
@@ -278,8 +277,21 @@ def write_delta_table_with_scd(
             )
 
             df = df.select(
-                sha2(concat_ws("|", *business_keys, now), 256).alias(surrogate_key_version),
-                sha2(concat_ws("|", *business_keys), 256).alias(surrogate_key),
+                sha2(
+                    concat_ws(
+                        "|",
+                        *[coalesce(lower(trim(col(c))), lit("NULL")) for c in business_keys],
+                        current_timestamp()  # or your `now` variable
+                    ),
+                    256
+                ).alias(surrogate_key_version),
+                sha2(
+                    concat_ws(
+                        "|",
+                        *[coalesce(lower(trim(col(c))), lit("NULL")) for c in business_keys]
+                    ),
+                    256
+                ).alias(surrogate_key),
                 *df.columns,
             )
             
@@ -327,19 +339,44 @@ def write_delta_table_with_scd(
             )
         )
 
+        logging.info(f"Expired records count: {expired_records.count()}")
+
+        (
+            staging_df
+            .filter((col("existing_sk").isNull()) | (col("existing_hash") != col("_data_hash")))
+            .show(5, truncate=False)
+        )
+
         new_records = (
             staging_df
             .filter((col("existing_sk").isNull()) | (col("existing_hash") != col("_data_hash")))
             .select(
-                sha2(concat_ws("||", *business_keys, now), 256).alias(surrogate_key_version),
-                sha2(concat_ws("||", *business_keys), 256).alias(surrogate_key),
+                sha2(
+                    concat_ws(
+                        "|",
+                        *[coalesce(lower(trim(col(c))), lit("NULL")) for c in business_keys],
+                        current_timestamp()  # or your `now` variable
+                    ),
+                    256
+                ).alias(surrogate_key_version),
+                sha2(
+                    concat_ws(
+                        "|",
+                        *[coalesce(lower(trim(col(c))), lit("NULL")) for c in business_keys]
+                    ),
+                    256
+                ).alias(surrogate_key),
                 *df.columns,
                 now.alias("effective_start_date"),
                 lit(None).cast("timestamp").alias("effective_end_date")
             )
         )
 
+        logging.info(f"New records count: {new_records.count()}")
+
         final_change_set = new_records.unionByName(expired_records, allowMissingColumns=True)
+
+        logging.info(f"Final change set count: {final_change_set.count()}")
 
         (
             target_table.alias("target")

@@ -1,6 +1,7 @@
 from pyspark.sql.types import (
     StructField, StructType,
-    StringType, ArrayType, DoubleType, BooleanType
+    StringType, ArrayType, DoubleType, BooleanType,
+    IntegerType
 )
 
 # Reusable sub-schemas to avoid repetition
@@ -248,4 +249,26 @@ full_airport_schema = StructType([
     StructField("urls", urls_schema),
     StructField("runways", ArrayType(runway_schema)),
     StructField("currentTime", current_time_schema)
+])
+
+
+
+## -- These schemas later are used for static csv files -- ##
+airport_csv_schema = StructType([
+    StructField("id", IntegerType(), False),                     # OurAirports internal ID
+    StructField("ident", StringType(), True),                    # ICAO or local identifier
+    StructField("type", StringType(), True),                     # large_airport, heliport, etc.
+    StructField("name", StringType(), True),                     # full airport name
+    StructField("latitude_deg", DoubleType(), True),             # latitude in decimal degrees
+    StructField("longitude_deg", DoubleType(), True),            # longitude in decimal degrees
+    StructField("elevation_ft", IntegerType(), True),            # elevation in feet
+    StructField("continent", StringType(), True),                # continent code (EU, NA, etc.)
+    StructField("iso_country", StringType(), True),              # 2-letter ISO country code
+    StructField("iso_region", StringType(), True),               # region code like GB-ENG
+    StructField("municipality", StringType(), True),             # city or served municipality
+    StructField("scheduled_service", StringType(), True),        # yes/no
+    StructField("gps_code", StringType(), True),                 # GPS database code
+    StructField("icao_code", StringType(), True),                # 4-letter ICAO code
+    StructField("iata_code", StringType(), True),                # 3-letter IATA code
+    StructField("local_code", StringType(), True),               # local airport code
 ])

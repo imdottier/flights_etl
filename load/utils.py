@@ -15,7 +15,7 @@ from delta.tables import DeltaTable
 
 from load.io_utils import (
     load_table_to_postgres, read_df_from_postgres,
-    write_watermarks
+    write_watermarks,
 )
 from utils.io_utils import read_df
 from utils.expression_utils import get_select_expressions
@@ -35,6 +35,7 @@ def read_fact_data_for_overwrite(
 ) -> DataFrame | None:
     """
     Performs a highly efficient, multi-step read on a partitioned Delta table.
+    Includes robust error handling.
     
     1. Scans recent partitions to find which `ingestion_hour`s contain new data.
     2. Uses that list to read only the necessary partitions.
@@ -47,70 +48,71 @@ def read_fact_data_for_overwrite(
     silver_table_name = f"{target_schema}.{target_table}"
     logging.info(f"Starting efficient read for partitioned table {silver_table_name}...")
 
-    # --- Step 1: Partition Discovery ---
-    # Find which `ingestion_hour` partitions contain data newer than our watermark.
-    # This query is fast because Delta can prune partitions based on metadata (_inserted_at stats).
-    logging.info(f"  - Step 1: Discovering new ingestion_hour partitions since {last_watermark}...")
-    
-    new_ingestion_hours_df = read_df(spark, target_schema, target_table) \
-        .where(col("_inserted_at") > lit(last_watermark)) \
-        .select("ingestion_hour") \
-        .distinct()
+    # --- THE ONLY CHANGE IS WRAPPING YOUR LOGIC IN A TRY/EXCEPT BLOCK ---
+    try:
+        # --- Step 1: Partition Discovery ---
+        logging.info(f"  Step 1: Discovering new ingestion_hour partitions since {last_watermark}...")
+        
+        # This read_df call is assumed to have its own try/except/raise
+        new_ingestion_hours_df = read_df(spark, target_schema, target_table, last_watermark=last_watermark) \
+            .select("ingestion_hour") \
+            .distinct()
 
-    if new_ingestion_hours_df.rdd.isEmpty():
-        logging.info("  - No new data found based on watermark. Skipping.")
-        return None
+        # The .rdd.isEmpty() action can fail
+        if new_ingestion_hours_df.rdd.isEmpty():
+            logging.info("  No new data found based on watermark. Skipping.")
+            return None
 
-    new_ingestion_hours = [row.ingestion_hour for row in new_ingestion_hours_df.collect()]
-    logging.info(f"  - Found new data in ingestion_hour partitions: {new_ingestion_hours}")
+        # The .collect() action can fail
+        new_ingestion_hours = [row.ingestion_hour for row in new_ingestion_hours_df.collect()]
+        logging.info(f"  Found new data in ingestion_hour partitions: {new_ingestion_hours}")
 
-    # --- Step 2: Read ONLY the relevant partitions from Silver ---
-    # This is now a highly efficient read, not a full table scan.
-    logging.info("  - Step 2: Reading only the affected partitions...")
-    
-    incremental_df = read_df(spark, target_schema, target_table) \
-        .where(col("ingestion_hour").isin(new_ingestion_hours))
-    
-    # --- Step 3: From this data, identify the full BUSINESS partitions to reload ---
-    # This logic is the same as before, but it operates on a much smaller DataFrame.
-    logging.info("  - Step 3: Identifying affected business-date partitions...")
-    partition_key_col = coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
-    
-    affected_dates_df = incremental_df.select(
-        date_trunc("day", partition_key_col).alias("flight_date")
-    ).distinct()
+        # --- Step 2: Read ONLY the relevant partitions from Silver ---
+        logging.info("  Step 2: Reading only the affected partitions...")
+        
+        incremental_df = read_df(spark, target_schema, target_table, where_clause=f"ingestion_hour IN {tuple(new_ingestion_hours)}")
+        
+        # --- Step 3: Identify the full BUSINESS partitions to reload ---
+        logging.info("  Step 3: Identifying affected business-date partitions...")
+        partition_key_col = coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
+        
+        affected_dates_df = incremental_df.select(
+            date_trunc("day", partition_key_col).alias("flight_date")
+        ).distinct()
 
-    dates_to_reload = [row.flight_date for row in affected_dates_df.collect()]
-    logging.info(f"  - Business dates to be fully reloaded: {[d.strftime('%Y-%m-%d') for d in dates_to_reload if d]}")
+        # The .collect() action can fail
+        dates_to_reload = [row.flight_date for row in affected_dates_df.collect() if row.flight_date is not None]
+        logging.info(f"  Business dates to be fully reloaded: {[d.strftime('%Y-%m-%d') for d in dates_to_reload]}")
 
-    if not dates_to_reload:
-        logging.warning("  - New data was found, but it didn't map to any valid flight dates. Skipping.")
-        return None
+        if not dates_to_reload:
+            logging.warning("  New data was found, but it didn't map to any valid flight dates. Skipping.")
+            return None
 
-    # --- Step 4: Go back and read the full data for the business partitions ---
-    # This step still scans more than just the incremental partitions, but it's now
-    # scoped to only the affected business dates, which is a massive improvement.
-    logging.info("  - Step 4: Reading full data for affected business partitions from SSoT...")
-    
-    full_fct_df = read_df(spark, target_schema, target_table).withColumn(
-        "flight_date", date_trunc("day", partition_key_col)
-    )
+        # --- Step 4: Read the full data for the business partitions ---
+        logging.info("  Step 4: Reading full data for affected business partitions from SSoT...")
+        
+        # Assumes read_df has its own try/except
+        full_fct_df = read_df(spark, target_schema, target_table).withColumn(
+            "flight_date", date_trunc("day", partition_key_col)
+        )
 
-    df_to_load = full_fct_df.where(col("flight_date").isin(dates_to_reload))
-    
-    # We must also include the new watermark value for the final update step.
-    # It's more efficient to calculate it here from the small incremental_df.
-    new_watermark = incremental_df.agg(max("_inserted_at")).first()[0]
+        df_to_load = full_fct_df.where(col("flight_date").isin(dates_to_reload))
+        logging.info(f"  Successfully prepared {df_to_load.count()} rows for overwrite.")
+        
+        return df_to_load
 
-    logging.info(f"  - Successfully prepared {df_to_load.count()} rows for overwrite. New watermark is {new_watermark}.")
-    
-    # Return both the data and the new watermark
-    return df_to_load, new_watermark
+    except Exception as e:
+        logging.error(
+            f"FATAL: An error occurred during the read process for {silver_table_name}. Cannot proceed. Error: {e}", 
+            exc_info=True
+        )
+        raise
 
 
 def read_silver_layer_data(spark: SparkSession, watermarks: dict[str, datetime]) -> dict[str, DataFrame]:
     """Reads all necessary tables from the Silver layer and returns them in a dictionary."""
 
+    # Old logic was to merge for dim tables so I did this, no longer needed for truncate load
     last_watermarks = {
         key: watermarks.get(f"silver.{key}", datetime(1970, 1, 1, tzinfo=timezone.utc))
         for key in ["dim_airports", "dim_runways", "dim_airlines", "dim_aircrafts", "fct_flights"]
@@ -121,20 +123,9 @@ def read_silver_layer_data(spark: SparkSession, watermarks: dict[str, datetime])
     dim_runways = read_df(spark, "silver", "dim_runways").drop("_data_hash")
     dim_airlines = read_df(spark, "silver", "dim_airlines").drop("_data_hash")
     dim_aircrafts = read_df(spark, "silver", "dim_aircrafts").drop("_data_hash")
-    fct_flights = read_df(spark, "silver", "fct_flights", last_watermarks["fct_flights"])  # already clean
-
-    affected_dates_df = fct_flights.withColumn(
-        "flight_date",
-        date_format(
-            date_trunc(
-                "day",
-                coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
-            ),
-            "yyyy-MM-dd"
-        )
-    ).distinct()
-
-    dates_to_reload = [row.flight_date for row in affected_dates_df.collect()]
+    fct_flights = read_fact_data_for_overwrite(
+        spark, "silver", "fct_flights", last_watermarks["fct_flights"]
+    )
 
     return {
         "dim_airports": dim_airports,
@@ -200,10 +191,10 @@ def get_unknown_record_sql(table_name: str) -> str:
 def load_dimensions(spark: SparkSession, cursor, dims_to_load: dict[str, DataFrame]):
     """Loads multiple dimension tables and their 'Unknown' records within a single transaction."""
     dim_configs = {
+        "dim_runways": {"pk": ["runway_version_key"]},
         "dim_airports": {"pk": ["airport_sk"]},
         "dim_airlines": {"pk": ["airline_sk"]},
         "dim_aircrafts": {"pk": ["aircraft_sk"]},
-        "dim_runways": {"pk": ["runway_version_key"]},
         "dim_flight_details": {"pk": ["flight_status", "codeshare_status", "is_cargo"]},
         "dim_quality_combination": {"pk": ["dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"]},
     }
@@ -215,6 +206,7 @@ def load_dimensions(spark: SparkSession, cursor, dims_to_load: dict[str, DataFra
                 spark=spark, df=df, target_schema="gold", target_table=name,
                 strategy="upsert", pk_cols=dim_configs[name]["pk"], cursor=cursor
             )
+
             unknown_sql = get_unknown_record_sql(name)
             if unknown_sql:
                 cursor.execute(unknown_sql)
@@ -259,18 +251,6 @@ def enrich_facts_with_dw_keys(spark: SparkSession, silver_flights_df: DataFrame)
         .withColumn("arrival_runway_version_key", when(col("arrival_runway_version_key").isNull(), sha2(lit("-1"), 256)).otherwise(col("arrival_runway_version_key")))
     )
 
-    # For partitioning by month
-    fct_flights_df = fct_flights_df.withColumn(
-        "flight_month",
-        date_format(
-            date_trunc(
-                "month",
-                coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
-            ),
-            "yyyy-MM-01"
-        )
-    )
-
     select_exprs = get_select_expressions("gold", "fct_flights_intermediate")
     final_df = fct_flights_df.select(*select_exprs)
 
@@ -296,5 +276,5 @@ def calculate_new_watermarks(spark: SparkSession, source_dfs: dict[str, DataFram
             
             if new_max:
                 new_watermarks[table_identifier] = new_max
-                logging.info(f"  - New watermark for {table_identifier}: {new_max}")
+                logging.info(f"  New watermark for {table_identifier}: {new_max}")
     return new_watermarks

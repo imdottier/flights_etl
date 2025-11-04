@@ -1,7 +1,16 @@
 {{
     config(
         materialized='incremental',
-        unique_key='fact_flight_id'
+        unique_key='fact_flight_id',
+        post_hook=[
+            "INSERT INTO {{ source('dwh_meta', '_dwh_watermarks') }} (table_name, last_inserted_at)
+            VALUES (
+                '{{ this.name }}',
+                (SELECT MAX(_inserted_at) FROM {{ this }})
+            )
+            ON CONFLICT (table_name) DO UPDATE
+            SET last_inserted_at = EXCLUDED.last_inserted_at;"
+        ]
     )
 }}
 
@@ -17,18 +26,39 @@ intermediate_flights AS (
 
     WHERE
         _inserted_at > (
-            SELECT last_inserted_at
+            SELECT COALESCE(last_inserted_at, '1970-01-01'::TIMESTAMP)
             FROM watermarks
-            WHERE table_name = 'silver.fct_flights'
+            WHERE table_name = '{{ this.name }}'
         )
 
     {% endif %}
+),
+
+dim_airports AS (
+    SELECT * FROM {{ source('gold_layer', 'dim_airports') }}
 ),
 
 dim_flight_details AS (
     SELECT * FROM {{ source('gold_layer', 'dim_flight_details') }}
 ),
 
+dim_airlines AS (
+    SELECT * FROM {{ source('gold_layer', 'dim_airlines') }}
+),
+
+dim_runways AS (
+    SELECT * FROM {{ source('gold_layer', 'dim_runways') }}
+),
+
+dim_aircrafts AS (
+    SELECT * FROM {{ source('gold_layer', 'dim_aircrafts') }}
+),
+
+dim_quality_combination AS (
+    SELECT * FROM {{ source('gold_layer', 'dim_quality_combination') }}
+),
+
+-- Handle derived cols
 base AS (
     SELECT
         f.*,
@@ -75,6 +105,7 @@ base AS (
 )
 
 
+-- Final Schema with joined dimensions
 SELECT
     -- Pass-through Keys (assuming fact_flight_id is NOT in the intermediate table)
     f.fact_flight_id,
@@ -84,11 +115,26 @@ SELECT
     f.arrival_airport_sk,
     f.airline_sk,
     f.aircraft_sk,
-    f.departure_runway_sk,
-    f.arrival_runway_sk,
+    f.departure_runway_version_key,
+    f.arrival_runway_version_key,
     f.quality_combo_sk,
     f.departure_date_key,
     f.arrival_date_key,
+
+    -- Denormalized Dimensions
+    dap.airport_iata AS departure_airport_iata_code,
+    dap.airport_icao AS departure_airport_icao_code,
+    dap.airport_name AS departure_airport_name,
+    aap.airport_iata AS arrival_airport_iata_code,
+    aap.airport_icao AS arrival_airport_icao_code,
+    aap.airport_name AS arrival_airport_name,
+    dal.airline_iata AS airline_iata_code,
+    dal.airline_icao AS airline_icao_code,
+    dal.airline_name AS airline_name,
+    dac.aircraft_reg AS aircraft_reg,
+    dac.aircraft_mode_s AS aircraft_mode_s,
+    dr.runway_name AS departure_runway_name,
+    ar.runway_name AS arrival_runway_name,
 
     -- Pass-through Degenerate Dimensions
     f.flight_number,
@@ -148,6 +194,27 @@ SELECT
 FROM
     base AS f
 
+LEFT JOIN
+    dim_airports AS dap
+    ON f.departure_airport_sk = dap.airport_sk
+LEFT JOIN
+    dim_airports AS aap
+    ON f.arrival_airport_sk = aap.airport_sk
+LEFT JOIN
+    dim_airlines AS dal
+    ON f.airline_sk = dal.airline_sk
+LEFT JOIN
+    dim_aircrafts AS dac
+    ON f.aircraft_sk = dac.aircraft_sk
+LEFT JOIN 
+    dim_runways AS dr
+    ON f.departure_runway_version_key = dr.runway_version_key
+LEFT JOIN 
+    dim_runways AS ar
+    ON f.arrival_runway_version_key = ar.runway_version_key
+LEFT JOIN 
+    dim_quality_combination AS dq
+    ON f.quality_combo_sk = dq.quality_combo_sk
 LEFT JOIN
     dim_flight_details AS fd
     ON f.flight_details_sk = fd.flight_details_sk

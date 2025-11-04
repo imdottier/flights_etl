@@ -91,7 +91,7 @@ def write_airports_data(
                 sha2(
                     concat_ws(
                         "|",
-                        *[lower(trim(col(c))) for c in data_cols]
+                        *[coalesce(lower(trim(col(c))), lit("NULL")) for c in data_cols]
                     ),
                 256)
             )

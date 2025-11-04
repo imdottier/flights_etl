@@ -1,8 +1,6 @@
 import logging
 
-from pyspark.sql.types import StructType
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import array_contains, concat, lit, col, array_join, format_string
 
 from utils.spark_session import get_spark_session
 from utils.io_utils import read_df
@@ -68,15 +66,11 @@ def run_publish_pipeline(
         with transaction_context() as master_cursor:
             # --- 6. Load the Final, Enriched Fact Table ---
             logging.info("Loading final Gold fact table...")
-            # Working on final version
-            # load_fact_table_incrementally(
-            #     spark=spark,
-            #     df=gold_fct_df,
-            #     target_schema="gold",
-            #     target_table="fct_flights_intermediate",
-            #     pk_cols=["flight_sk"],
-            #     cursor=master_cursor
-            # )
+            load_table_to_postgres(
+                spark=spark, df=gold_fct_df, target_schema="gold", target_table="fct_flights_intermediate",
+                strategy="delete_insert", partition_key_col="flight_date", cursor=master_cursor,
+                exclude_cols=["fact_flight_id"],
+            )
 
             # --- 7. Update Watermarks ---
             logging.info("Updating watermarks...")

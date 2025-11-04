@@ -2,8 +2,9 @@ import logging
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, explode, sha2, concat_ws, lower, trim,
-    lit, current_timestamp
+    lit, current_timestamp, coalesce
 )
+from functools import reduce
 
 from process.utils import write_delta_table_with_scd, flatten_df
 from utils.expression_utils import get_select_expressions
@@ -72,7 +73,7 @@ def write_runways_data(
                 sha2(
                     concat_ws(
                         "|",
-                        *[lower(trim(col(c))) for c in data_cols]
+                        *[coalesce(lower(trim(col(c))), lit("NULL")) for c in data_cols]
                     ),
                 256)
             )
@@ -83,6 +84,11 @@ def write_runways_data(
         # Get the select expressions for the dim_runways table
         select_exprs = get_select_expressions("silver", "dim_runways")
         dim_runways = flattened_runways_df.select(*select_exprs)
+
+        business_keys = ["airport_sk", "true_heading", "latitude", "longitude"]
+        dim_runways = dim_runways.filter(
+            reduce(lambda a, b: a & b, (col(c).isNotNull() for c in business_keys))
+        )
         # dim_runways = dim_runways.unionByName(unknown_runway_df)
 
     except Exception as e:
@@ -96,7 +102,7 @@ def write_runways_data(
             df=dim_runways,
             db_name="silver",
             table_name="dim_runways",
-            business_keys=["airport_sk", "true_heading", "latitude", "longitude"],
+            business_keys=business_keys,
             surrogate_key="runway_sk",
             surrogate_key_version="runway_version_key"
         )

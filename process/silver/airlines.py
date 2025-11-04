@@ -1,7 +1,7 @@
 import logging
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
-    current_timestamp, col, sha2, concat_ws, lit, lower, trim,
+    current_timestamp, col, sha2, concat_ws, lit, lower, trim, coalesce
 )
 from datetime import datetime
 
@@ -33,7 +33,7 @@ def write_airlines_data(
             sha2(
                 concat_ws(
                     "|",
-                    *[lower(trim(col(c))) for c in data_cols]
+                    *[coalesce(lower(trim(col(c))), lit("NULL")) for c in data_cols]
                 ),
             256)
         )

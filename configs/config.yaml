@@ -172,7 +172,6 @@ gold:
     final_column_order:
       # --- Keys ---
       # Natural Key for lineage and potential joins.
-      - name: flight_sk
       - name: flight_composite_pk
       
       # --- Foreign Keys (The result of your dimension lookups) ---
@@ -220,3 +219,4 @@ gold:
       - name: _ingested_at
       - name: _inserted_at
       - name: ingestion_hour
+      - name: flight_date
