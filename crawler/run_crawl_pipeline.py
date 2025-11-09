@@ -50,6 +50,7 @@ def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False)
 
         for airport in airports_to_process:
             iata = airport['iata']
+
             logging.info(f"Fetching data for {airport['airportName']} ({iata})")
             success = get_airport(iata_code=iata)
 
@@ -71,7 +72,8 @@ def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False)
             "batch_start_utc": batch_start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "log_file": str(log_filepath),
             "processed_airports": [],
-            "failed_airports": []
+            "failed_airports": [],
+            "skipped_airports": []  # NEW: Track skipped airports
         }
 
         # Log batch start
@@ -79,6 +81,15 @@ def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False)
         try:
             for airport in airports_to_process:
                 iata = airport['iata']
+
+                # --- NEW: Check if data already exists ---
+                expected_path = BRONZE_RAW_BASE / "flights" / f"ingestion_hour={ingestion_hour}" / f"airport={iata}" / "payload.json"
+                if expected_path.exists():
+                    logging.info(f"Data for {iata} at {ingestion_hour} already exists. Skipping.")
+                    crawl_summary["skipped_airports"].append(iata)
+                    continue  # Move to the next airport
+                # --- End of new check ---
+
                 logging.info(f"Fetching flights for {airport['airportName']} ({iata})")
                 
                 success = get_flights(iata_code=iata, ingestion_hour=ingestion_hour)
@@ -100,7 +111,8 @@ def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False)
             crawl_summary["duration_seconds"] = round(duration_seconds, 2)
             crawl_summary["total_success"] = len(crawl_summary["processed_airports"])
             crawl_summary["total_failed"] = len(crawl_summary["failed_airports"])
-
+            crawl_summary["total_skipped"] = len(crawl_summary["skipped_airports"]) # NEW: Add skipped count
+            
             summary_path = script_dir / "logs"
             summary_filename = f"summary_{ingestion_hour}.json"
             summary_filepath = summary_path / summary_filename

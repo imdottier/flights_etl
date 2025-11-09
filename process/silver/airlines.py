@@ -5,7 +5,7 @@ from pyspark.sql.functions import (
 )
 from datetime import datetime
 
-from process.utils import write_delta_table
+from process.io_utils import write_delta_table
 
 def write_airlines_data(
     spark: SparkSession,
@@ -16,27 +16,18 @@ def write_airlines_data(
     Writes the dim_airlines table to a Delta table.
     """
     dim_airlines = enriched_flights.filter(
-        col("airline_sk").isNotNull()
+        col("airline_bk").isNotNull()
     ).select(
-        col("airline_sk").alias("airline_sk"),
+        col("airline_bk").alias("airline_bk"),
         col("airline_iata").alias("airline_iata"),
         col("airline_icao").alias("airline_icao"),
         col("airline_name").alias("airline_name"),
-    ).dropDuplicates(["airline_sk"])
+    ).dropDuplicates(["airline_bk"])
 
-    data_cols = [c for c in dim_airlines.columns if c != "airline_sk"]
+    data_cols = [c for c in dim_airlines.columns if c != "airline_bk"]
 
     dim_airlines = (
         dim_airlines
-        .withColumn(
-            "_data_hash",
-            sha2(
-                concat_ws(
-                    "|",
-                    *[coalesce(lower(trim(col(c))), lit("NULL")) for c in data_cols]
-                ),
-            256)
-        )
         .withColumn("_ingested_at", lit(batch_time))
         .withColumn("_inserted_at", current_timestamp())
     )
@@ -51,7 +42,7 @@ def write_airlines_data(
             db_name="silver",
             table_name="dim_airlines",
             write_mode="merge",
-            merge_keys=["airline_sk"]
+            merge_keys=["airline_bk"]
         )
 
         logging.info("Successfully wrote dim_airlines to Delta table.")

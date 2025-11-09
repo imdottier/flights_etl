@@ -9,13 +9,14 @@ from psycopg2 import sql
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, lit, current_timestamp, sha2, date_trunc, date_format, 
-    array_contains, format_string, max as spark_max, coalesce, lit, when
+    array_contains, format_string, max as spark_max, coalesce, lit, when,
+    concat_ws
 )
 from delta.tables import DeltaTable
 
 from load.io_utils import (
     load_table_to_postgres, read_df_from_postgres,
-    write_watermarks,
+    write_watermarks, get_postgres_table_schema
 )
 from utils.io_utils import read_df
 from utils.expression_utils import get_select_expressions
@@ -123,17 +124,109 @@ def read_silver_layer_data(spark: SparkSession, watermarks: dict[str, datetime])
     dim_runways = read_df(spark, "silver", "dim_runways").drop("_data_hash")
     dim_airlines = read_df(spark, "silver", "dim_airlines").drop("_data_hash")
     dim_aircrafts = read_df(spark, "silver", "dim_aircrafts").drop("_data_hash")
+    dim_regions = read_df(spark, "silver", "dim_regions", optional=True) # Might not be here if no openflights data yet
     fct_flights = read_fact_data_for_overwrite(
         spark, "silver", "fct_flights", last_watermarks["fct_flights"]
     )
 
-    return {
+    result = {
         "dim_airports": dim_airports,
         "dim_runways": dim_runways,
         "dim_airlines": dim_airlines,
         "dim_aircrafts": dim_aircrafts,
         "fct_flights": fct_flights,
     }
+
+    if dim_regions:
+        result["dim_regions"] = dim_regions
+
+    return result
+
+
+def reconcile_airport_regions(
+    dim_airports: DataFrame,
+    dim_regions: DataFrame,
+):
+    # --- Step 1: Initial join ---
+    # Alias both dataframes to avoid column ambiguity
+    airports_aliased = dim_airports.alias("a")
+    regions_aliased = dim_regions.alias("r")
+
+    initial_join = airports_aliased.join(
+        regions_aliased,
+        col("a.iso_region") == col("r.region_code"),
+        how="left"
+    )
+
+    # --- Step 2: Isolate the three groups ---
+
+    # Group 1: Airports that matched successfully. These are done.
+    # We select only the columns from the airports table plus the required ones from regions.
+    matched_ok = initial_join.filter(col("r.region_code").isNotNull()).select(
+        "a.*" # Select all original airport columns
+    )
+
+    # Group 2: Airports that failed the initial join. These need more work.
+    # We select only the original airport columns to process them further.
+    failed_first_join = initial_join.filter(col("r.region_code").isNull()).select("a.*")
+
+
+    # --- Step 3: Run the fallback join on the failed airports ---
+    # We re-alias the failed airports dataframe
+    fallback_join = failed_first_join.alias("f").join(
+        dim_regions.alias("r2"),
+        (col("f.iso_country") == col("r2.iso_country")) |
+        (col("f.country_name") == col("r2.country_name")),
+        "left"
+    )
+
+    # Group 2a: Airports that matched on the fallback.
+    # We update their iso_region.
+    matched_fallback = fallback_join.filter(col("r2.region_code").isNotNull()).select(
+        "f.*", # All original airport columns
+        col("r2.region_code").alias("iso_region_resolved")
+    ).withColumn(
+        "iso_region", col("iso_region_resolved")
+    ).drop("iso_region_resolved")
+
+    # Group 3: Airports that failed both joins. These are the unknown ones.
+    unmatched_final = fallback_join.filter(col("r2.region_code").isNull()).select(
+        "f.*",
+        when(
+            col("f.iso_country").isNotNull() |
+            col("f.country_name").isNotNull(),
+            concat_ws(
+                "|",
+                lit("UNK"),
+                coalesce(col("f.iso_country"), col("f.country_name")),
+            )
+        ).otherwise(lit("ZZ-U-A")).alias("iso_region_resolved")
+    ).withColumn(
+        "iso_region", 
+        col("iso_region_resolved")
+    ).withColumn(
+        "iso_country",
+        coalesce(col("f.iso_country"), lit("ZZ"))
+    ).drop("iso_region_resolved")
+
+    # --- Step 4: Create the final airports DataFrame by uniting all groups ---
+    # Ensure all three DataFrames have the same schema before unioning
+    dim_airports_final = matched_ok.unionByName(matched_fallback).unionByName(unmatched_final)
+
+
+    # --- Step 5: Create the new region rows to be added to dim_regions ---
+    # This logic was mostly correct, but we source it from our clean `unmatched_final` DF
+    unk_regions = unmatched_final.select(
+        col("iso_region").alias("region_code"),
+        col("iso_country"),
+        col("country_name")
+    ).distinct().withColumn(
+        "region_name", lit("Unknown Region")
+    )
+
+    dim_regions_final = dim_regions.unionByName(unk_regions).dropDuplicates(["region_code"])
+
+    return dim_airports_final, dim_regions_final
 
 
 def create_derived_dimensions(silver_flights_df: DataFrame, batch_time) -> dict[str, DataFrame]:
@@ -191,12 +284,13 @@ def get_unknown_record_sql(table_name: str) -> str:
 def load_dimensions(spark: SparkSession, cursor, dims_to_load: dict[str, DataFrame]):
     """Loads multiple dimension tables and their 'Unknown' records within a single transaction."""
     dim_configs = {
-        "dim_runways": {"pk": ["runway_version_key"]},
-        "dim_airports": {"pk": ["airport_sk"]},
-        "dim_airlines": {"pk": ["airline_sk"]},
-        "dim_aircrafts": {"pk": ["aircraft_sk"]},
+        "dim_runways": {"pk": ["runway_version_bk"]},
+        "dim_airports": {"pk": ["airport_bk"]},
+        "dim_airlines": {"pk": ["airline_bk"]},
+        "dim_aircrafts": {"pk": ["aircraft_bk"]},
         "dim_flight_details": {"pk": ["flight_status", "codeshare_status", "is_cargo"]},
         "dim_quality_combination": {"pk": ["dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"]},
+        "dim_regions": {"pk": ["region_code"]},
     }
 
     for name, df in dims_to_load.items():
@@ -247,8 +341,8 @@ def enrich_facts_with_dw_keys(spark: SparkSession, silver_flights_df: DataFrame)
     # Fill SHA2 text keys
     fct_flights_df = (
         fct_flights_df
-        .withColumn("departure_runway_version_key", when(col("departure_runway_version_key").isNull(), sha2(lit("-1"), 256)).otherwise(col("departure_runway_version_key")))
-        .withColumn("arrival_runway_version_key", when(col("arrival_runway_version_key").isNull(), sha2(lit("-1"), 256)).otherwise(col("arrival_runway_version_key")))
+        .withColumn("departure_runway_version_bk", when(col("departure_runway_version_bk").isNull(), sha2(lit("-1"), 256)).otherwise(col("departure_runway_version_bk")))
+        .withColumn("arrival_runway_version_bk", when(col("arrival_runway_version_bk").isNull(), sha2(lit("-1"), 256)).otherwise(col("arrival_runway_version_bk")))
     )
 
     select_exprs = get_select_expressions("gold", "fct_flights_intermediate")

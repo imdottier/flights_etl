@@ -4,13 +4,17 @@ from pyspark.sql import SparkSession, DataFrame
 from utils.spark_session import get_spark_session
 from utils.logging_utils import setup_logging
 from utils.io_utils import read_df
-from process.utils import enrich_flights_data
+from process.utils import enrich_flights_data, csv_to_df
 
 from process.silver.aircrafts import write_aircrafts_data
 from process.silver.airlines import write_airlines_data
-from process.silver.airports import write_airports_data
-from process.silver.runways import write_runways_data
+from process.silver.airports import (
+    write_airports_data, write_openflights_airports_data,
+    filter_openflights_airports
+) 
+from process.silver.runways import write_runways_data, write_openflights_runways_data
 from process.silver.flights import write_flights_data
+from process.silver.regions import write_openflights_regions_data
 
 from datetime import datetime, timezone, timedelta
 
@@ -35,6 +39,7 @@ def run_silver_pipeline(
     logging.info("="*50)
 
     # Create the silver database if not exists
+    spark.sql("DROP DATABASE IF EXISTS silver CASCADE")
     spark.sql("CREATE DATABASE IF NOT EXISTS silver")
 
     enriched_flights_df = None
@@ -89,6 +94,63 @@ def run_silver_pipeline(
             logging.info("Unpersisting enriched_flights_df to free up memory.")
             enriched_flights_df.unpersist()
         
+        logging.info("="*50)
+        logging.info("=== Finished the silver pipeline ===")
+        logging.info("="*50)
+
+
+def run_openflights_pipeline(
+    spark: SparkSession,
+) -> None:
+    """
+    Runs the pipeline that processes the OpenFlights data.
+
+    :param spark: The SparkSession object
+    :param batch_time: The datetime object representing the batch time
+    :return: None
+    """
+    logging.info("="*50)
+    logging.info("=== Starting the silver pipeline ===")
+    logging.info("="*50)
+
+    # Create the silver database if not exists
+    spark.sql("CREATE DATABASE IF NOT EXISTS silver")
+
+    try:
+        logging.info("Loading OpenFlights data...")
+        # Load OpenFlights data from CSV files
+        openflights_airports = csv_to_df(spark, "airports.csv")
+        openflights_runways = csv_to_df(spark, "runways.csv")
+        openflights_regions = csv_to_df(spark, "regions.csv")
+        openflights_countries = csv_to_df(spark, "countries.csv")
+
+        # Filter the airports data
+        filtered_airports = filter_openflights_airports(openflights_airports)
+
+        batch_time = datetime.now(timezone.utc)
+
+        logging.info("Writing OpenFlights data...")
+        # Write the data to the silver database
+        if filtered_airports:
+            write_openflights_airports_data(spark, filtered_airports, batch_time)
+        
+        if openflights_runways and filtered_airports:
+            write_openflights_runways_data(
+                spark, openflights_runways,
+                filtered_airports, batch_time
+            )
+
+        if openflights_regions and openflights_countries:
+            write_openflights_regions_data(
+                spark, openflights_regions,
+                openflights_countries, batch_time
+            )
+    
+    except Exception as e:
+        logging.error(f"An unexpected error occurred in the silver pipeline: {e}", exc_info=True)
+        raise
+
+    finally:
         logging.info("="*50)
         logging.info("=== Finished the silver pipeline ===")
         logging.info("="*50)

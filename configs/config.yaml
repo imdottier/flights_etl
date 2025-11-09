@@ -7,12 +7,12 @@ silver:
     final_column_order:
       # --- Foreign Keys (created on the fly, no original name) ---
       - name: flight_composite_pk
-      - name: departure_airport_sk
-      - name: arrival_airport_sk
-      - name: airline_sk
-      - name: aircraft_sk
-      - name: departure_runway_version_key
-      - name: arrival_runway_version_key
+      - name: departure_airport_bk
+      - name: arrival_airport_bk
+      - name: airline_bk
+      - name: aircraft_bk
+      - name: departure_runway_version_bk
+      - name: arrival_runway_version_bk
 
       # --- Flight Identity ---
       - name: number
@@ -130,15 +130,24 @@ silver:
       - name: continent_name
       - name: time_zone
 
+  dim_airports:
+    merge_strategy:
+      country_name: prefer_arriving
+      airport_time_zone: prefer_arriving
+
 
   dim_runways:
+    merge_strategy:
+      has_lighting: -1
+      is_closed: -1
+
     final_column_order:
       # --- Keys and Identifiers ---
       # No alias needed, this is the Foreign Key to dim_airports
       # - name: runway_business_key
-      # - name: runway_sk
+      - name: runway_bk
       
-      - name: airport_sk
+      - name: airport_bk
       - name: name
         alias: runway_name
 
@@ -162,7 +171,105 @@ silver:
       - name: location_lon
         alias: longitude
 
-      - name: _data_hash
+      - name: _ingested_at
+      - name: _inserted_at
+
+  dim_airports_openflights:
+    merge_strategy:
+      airport_iata: prefer_arriving
+      airport_icao: prefer_arriving
+      airport_gps: prefer_arriving
+      airport_local_code: prefer_arriving
+      airport_name: prefer_arriving
+      municipality_name: prefer_arriving
+      iso_region: prefer_arriving
+      iso_country: prefer_arriving
+      latitude: prefer_arriving
+      longitude: prefer_arriving
+      elevation_feet: prefer_arriving
+      airport_type: prefer_arriving
+      scheduled_service: prefer_arriving
+
+    final_column_order:
+      - name: airport_bk
+      - name: iata_code
+        alias: airport_iata
+      - name: icao_code
+        alias: airport_icao
+      - name: gps_code
+        alias: airport_gps
+      - name: local_code
+        alias: airport_local_code
+      - name: name
+        alias: airport_name
+      - name: municipality
+        alias: municipality_name
+      - name: iso_region
+      - name: iso_country
+      - name: latitude_deg
+        alias: latitude
+      - name: longitude_deg
+        alias: longitude
+      - name: elevation_ft
+        alias: elevation_feet
+      - name: type
+        alias: airport_type
+      - name: scheduled_service
+
+      - name: _ingested_at
+      - name: _inserted_at
+
+  dim_runways_openflights:
+    merge_strategy:
+      surface: -1
+      has_lighting: -1
+      is_closed: -1
+      length_feet: 0
+      width_feet: 0
+      displaced_threshold_feet: 0
+      elevation_feet: 0
+      runway_end_type: -1
+      runway_name: -1
+
+    final_column_order:
+      - name: runway_bk
+      - name: airport_bk
+      - name: runway_name
+
+      - name: true_heading
+      - name: surface
+      - name: has_lighting
+      - name: is_closed
+      - name: length_feet
+      - name: width_feet
+      - name: displaced_threshold_feet
+      - name: latitude
+      - name: longitude
+      - name: elevation_feet
+      - name: runway_end_type
+
+      - name: _ingested_at
+      - name: _inserted_at
+
+  dim_regions:
+    merge_strategy:
+      local_code: prefer_arriving
+      region_name: prefer_arriving
+      continent_code: prefer_arriving
+      iso_country: prefer_arriving
+      country_name: prefer_arriving
+
+    final_column_order:
+      - name: regions.code
+        alias: region_code
+      - name: local_code
+      - name: regions.name
+        alias: region_name
+      - name: regions.continent
+        alias: continent_code
+      - name: iso_country
+      - name: country_name
+
       - name: _ingested_at
       - name: _inserted_at
 
@@ -179,14 +286,14 @@ gold:
       - name: flight_details_sk
       - name: quality_combo_sk
       # Keys from the original Silver dimensions are carried over.
-      - name: departure_airport_sk
-      - name: arrival_airport_sk
-      - name: airline_sk
-      - name: aircraft_sk
+      - name: departure_airport_bk
+      - name: arrival_airport_bk
+      - name: airline_bk
+      - name: aircraft_bk
       # Nullable FKs have been resolved. They may still be NULL at this stage,
       # or you might have already coalesced them to -1. Let's assume they are still NULL for clarity.
-      - name: departure_runway_version_key
-      - name: arrival_runway_version_key
+      - name: departure_runway_version_bk
+      - name: arrival_runway_version_bk
 
       # --- Degenerate Dimensions (Carried over from Silver) ---
       - name: flight_number

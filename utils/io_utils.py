@@ -32,7 +32,7 @@ def write_json_to_bronze(data: dict, path: str, file_name: str):
 
 def read_df(
     spark: SparkSession, layer: str, table_name: str,
-    last_watermark: datetime = None, **kwargs
+    last_watermark: datetime = None, optional: bool = False, **kwargs
 ) -> DataFrame:
     full_table_name = f"{layer}.{table_name}"
 
@@ -48,7 +48,9 @@ def read_df(
         return df
     
     except Exception as e:
-        logging.error(f"Error reading {full_table_name}: {e}", exc_info=True)
-        raise
-
-
+        if optional:
+            logging.warning(f"Optional table {full_table_name} not found or unreadable: {e}")
+            return None
+        else:
+            logging.error(f"Error reading {full_table_name}: {e}", exc_info=True)
+            raise

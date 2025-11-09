@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, date_format, date_trunc, coalesce
+from pyspark.sql.functions import col, date_format, date_trunc, coalesce, lit
 
 from psycopg2 import sql
 from psycopg2.extras import execute_values
@@ -24,6 +24,25 @@ pg_properties = {
     "password": POSTGRE_DB_PASSWORD,
     "driver": "org.postgresql.Driver"
 }
+
+
+def get_postgres_table_schema(cursor, schema: str, table: str) -> list[str]:
+    cursor.execute(f"""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+        ORDER BY ordinal_position
+    """, (schema, table))
+    return [r[0] for r in cursor.fetchall()]
+
+
+def align_df_to_postgres(df: DataFrame, target_columns: list[str]) -> DataFrame:
+    # Add missing columns with nulls
+    for col in target_columns:
+        if col not in df.columns:
+            df = df.withColumn(col, lit(None))
+    # Reorder to match target schema
+    return df.select(target_columns)
 
 
 def load_table_to_postgres(
@@ -49,6 +68,10 @@ def load_table_to_postgres(
     temp_table_identifier = sql.Identifier(temp_table_name)
 
     try:
+        with transaction_context(cursor) as cur:
+            target_columns = get_postgres_table_schema(cursor, target_schema, target_table)
+            df = align_df_to_postgres(df, target_columns)
+
         # --- 2. Write to Temporary Table ---
         logging.info(f"Writing to temp table: {temp_table_name}...")
         df.write.jdbc(url=pg_url, table=temp_table_name, mode="overwrite", properties=pg_properties)

@@ -29,6 +29,15 @@ def get_select_expressions(layer: str, table_name: str):
 
     return select_expressions
 
+
+def get_merge_strategy(layer: str, table_name: str):
+    """
+    Returns the merge strategy for the given layer and table name.
+    Can be either reconciliation_rules for SCD Type 1
+    or tracked_attribute_cols for SCD Type 2
+    """
+    return CONFIG[layer][table_name]["merge_strategy"]
+
 if __name__ == "__main__":
     spark = get_spark_session()
     a = get_select_expressions("silver", "fct_flights")

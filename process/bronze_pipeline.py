@@ -7,7 +7,8 @@ from configs.schemas import flights_schema, full_airport_schema
 
 from utils.spark_session import get_spark_session
 from utils.logging_utils import setup_logging
-from process.utils import json_to_df, write_delta_table
+from process.utils import json_to_df
+from process.io_utils import write_delta_table
 
 from datetime import datetime, timezone, timedelta
 
@@ -21,6 +22,7 @@ def run_bronze_pipeline(spark: SparkSession, ingestion_hours: list[str], process
     :param process_airports: Whether to process the airports data
     :return: None
     """
+    spark.sql("DROP DATABASE IF EXISTS bronze CASCADE")
     spark.sql("CREATE DATABASE IF NOT EXISTS bronze")
     
     try:

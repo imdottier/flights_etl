@@ -208,5 +208,145 @@
     "country": "Germany",
     "iata": "DUS",
     "icao": "EDDL"
+  },
+  {
+    "airportName": "Budapest Airport",
+    "city": "Budapest",
+    "country": "Hungary",
+    "iata": "BUD",
+    "icao": "LHBP"
+  },
+  {
+    "airportName": "Václav Havel Airport Prague",
+    "city": "Prague",
+    "country": "Czech Republic",
+    "iata": "PRG",
+    "icao": "LKPR"
+  },
+  {
+    "airportName": "Helsinki Airport",
+    "city": "Helsinki",
+    "country": "Finland",
+    "iata": "HEL",
+    "icao": "EFHK"
+  },
+  {
+    "airportName": "Henri Coandă International Airport",
+    "city": "Bucharest",
+    "country": "Romania",
+    "iata": "OTP",
+    "icao": "LROP"
+  },
+  {
+    "airportName": "Porto Airport",
+    "city": "Porto",
+    "country": "Portugal",
+    "iata": "OPO",
+    "icao": "LPPR"
+  },
+  {
+    "airportName": "Kraków John Paul II International Airport",
+    "city": "Kraków",
+    "country": "Poland",
+    "iata": "KRK",
+    "icao": "EPKK"
+  },
+  {
+    "airportName": "Tirana Airport",
+    "city": "Tirana",
+    "country": "Albania",
+    "iata": "TIA",
+    "icao": "LATI"
+  },
+  {
+    "airportName": "Heraklion International Airport",
+    "city": "Heraklion",
+    "country": "Greece",
+    "iata": "HER",
+    "icao": "LGIR"
+  },
+  {
+    "airportName": "EuroAirport Basel Mulhouse Freiburg",
+    "city": "Basel / Mulhouse / Freiburg im Breisgau",
+    "country": "France / Switzerland",
+    "iata": "BSL",
+    "icao": "LFSB"
+  },
+  {
+    "airportName": "Belgrade Nikola Tesla Airport",
+    "city": "Belgrade",
+    "country": "Serbia",
+    "iata": "BEG",
+    "icao": "LYBE"
+  },
+  {
+    "airportName": "Keflavík Airport",
+    "city": "Reykjavík",
+    "country": "Iceland",
+    "iata": "KEF",
+    "icao": "BIKF"
+  },
+  {
+    "airportName": "Sofia Airport",
+    "city": "Sofia",
+    "country": "Bulgaria",
+    "iata": "SOF",
+    "icao": "LBSF"
+  },
+  {
+    "airportName": "Thessaloniki Airport",
+    "city": "Thessaloniki",
+    "country": "Greece",
+    "iata": "SKG",
+    "icao": "LGTS"
+  },
+  {
+    "airportName": "Riga International Airport",
+    "city": "Riga",
+    "country": "Latvia",
+    "iata": "RIX",
+    "icao": "EVRA"
+  },
+  {
+    "airportName": "Eindhoven Airport",
+    "city": "Eindhoven",
+    "country": "Netherlands",
+    "iata": "EIN",
+    "icao": "EHEH"
+  },
+  {
+    "airportName": "Gdańsk Lech Wałęsa Airport",
+    "city": "Gdańsk",
+    "country": "Poland",
+    "iata": "GDN",
+    "icao": "EPGD"
+  },
+  {
+    "airportName": "Bergen Airport, Flesland",
+    "city": "Bergen",
+    "country": "Norway",
+    "iata": "BGO",
+    "icao": "ENBR"
+  },
+  {
+    "airportName": "Göteborg Landvetter Airport",
+    "city": "Gothenburg",
+    "country": "Sweden",
+    "iata": "GOT",
+    "icao": "ESGG"
+  },
+  {
+    "airportName": "Zvartnots International Airport",
+    "city": "Yerevan",
+    "country": "Armenia",
+    "iata": "EVN",
+    "icao": "UDYZ"
+  },
+  {
+    "airportName": "Vilnius Airport",
+    "city": "Vilnius",
+    "country": "Lithuania",
+    "iata": "VNO",
+    "icao": "EYVI"
   }
 ]

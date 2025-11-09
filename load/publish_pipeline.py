@@ -5,7 +5,6 @@ from pyspark.sql import SparkSession
 from utils.spark_session import get_spark_session
 from utils.io_utils import read_df
 from utils.logging_utils import setup_logging
-from process.utils import json_to_df, write_delta_table
 
 from load.io_utils import (
     load_table_to_postgres, get_all_watermarks, write_watermarks,
@@ -16,7 +15,8 @@ from utils.expression_utils import get_select_expressions
 
 from load.utils import (
     read_silver_layer_data, create_derived_dimensions,
-    load_dimensions, enrich_facts_with_dw_keys, calculate_new_watermarks
+    load_dimensions, enrich_facts_with_dw_keys, calculate_new_watermarks,
+    reconcile_airport_regions
 )
 
 from datetime import datetime
@@ -51,8 +51,18 @@ def run_publish_pipeline(
             "dim_runways": silver_dfs["dim_runways"],
             "dim_airlines": silver_dfs["dim_airlines"],
             "dim_aircrafts": silver_dfs["dim_aircrafts"],
+            "dim_regions": silver_dfs["dim_regions"],
             **derived_dims_dfs # Adds the new flight_details and quality_combination dfs
         }
+
+        # Reconcile iso_region for dim_airports
+        if "dim_regions" in silver_dfs:
+            dim_airports, dim_regions = reconcile_airport_regions(
+                silver_dfs["dim_airports"], silver_dfs["dim_regions"]
+            )
+
+            all_dims_to_load["dim_airports"] = dim_airports
+            all_dims_to_load["dim_regions"] = dim_regions
 
         # --- 4. Load All Dimensions Atomically to the Data Warehouse ---
         logging.info("Loading all dimension tables into the data warehouse...")

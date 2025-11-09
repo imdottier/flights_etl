@@ -3,7 +3,7 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, coalesce, lit, current_timestamp
 
 from utils.io_utils import read_df
-from process.utils import write_delta_table
+from process.io_utils import write_delta_table
 from utils.expression_utils import get_select_expressions
 
 from datetime import datetime
@@ -42,12 +42,12 @@ def write_flights_data(
             enriched_flights
             .join(
                 dep_runway_dim,
-                on=[enriched_flights["departure_runway"] == dep_runway_dim["runway_name"], enriched_flights["departure_airport_sk"] == dep_runway_dim["airport_sk"]],
+                on=[enriched_flights["departure_runway"] == dep_runway_dim["runway_name"], enriched_flights["departure_airport_bk"] == dep_runway_dim["airport_bk"]],
                 how="left"
             )
             .join(
                 arr_runway_dim,
-                on=[enriched_flights["arrival_runway"] == arr_runway_dim["runway_name"], enriched_flights["arrival_airport_sk"] == arr_runway_dim["airport_sk"]],
+                on=[enriched_flights["arrival_runway"] == arr_runway_dim["runway_name"], enriched_flights["arrival_airport_bk"] == arr_runway_dim["airport_bk"]],
                 how="left"
             )
             .drop(dep_runway_dim["_ingested_at"])
@@ -56,18 +56,18 @@ def write_flights_data(
             .drop(arr_runway_dim["_inserted_at"])
         )
 
-        # # Get the unknown runway sk
-        # unknown_runway_sk = silver_runways.filter(col("airport_sk") == -1).select("runway_sk").collect()[0]["runway_sk"]
+        # # Get the unknown runway bk
+        # unknown_runway_bk = silver_runways.filter(col("airport_bk") == -1).select("runway_bk").collect()[0]["runway_bk"]
 
-        # Replace the null runway sk with the unknown runway sk
+        # Replace the null runway bk with the unknown runway bk
         fct_flights = fct_flights.withColumn(
-            "departure_runway_version_key",
-            col("dep.runway_version_key")
-            # coalesce(col("dep.runway_sk"), lit(unknown_runway_sk))
+            "departure_runway_version_bk",
+            col("dep.runway_version_bk")
+            # coalesce(col("dep.runway_bk"), lit(unknown_runway_bk))
         ).withColumn(
-            "arrival_runway_version_key",
-            col("arr.runway_version_key")
-            # coalesce(col("arr.runway_sk"), lit(unknown_runway_sk))
+            "arrival_runway_version_bk",
+            col("arr.runway_version_bk")
+            # coalesce(col("arr.runway_bk"), lit(unknown_runway_bk))
         )
 
         # # Fill the null values of the runway sk with the unknown runway sk
