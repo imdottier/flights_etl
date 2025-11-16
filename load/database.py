@@ -6,10 +6,10 @@ from contextlib import contextmanager
 
 load_dotenv()
 
-POSTGRE_DB_NAME = os.getenv("POSTGRE_DB_NAME")
-POSTGRE_DB_USER = os.getenv("POSTGRE_DB_USER")
-POSTGRE_DB_PASSWORD = os.getenv("POSTGRE_DB_PASSWORD")
-POSTGRE_DB_HOST = os.getenv("POSTGRE_DB_HOST")
+POSTGRES_DB_NAME = os.getenv("POSTGRES_DB_NAME")
+POSTGRES_DB_USER = os.getenv("POSTGRES_DB_USER")
+POSTGRES_DB_PASSWORD = os.getenv("POSTGRES_DB_PASSWORD")
+POSTGRES_DB_HOST = os.getenv("POSTGRES_DB_HOST")
 
 
 @contextmanager
@@ -17,10 +17,10 @@ def get_db():
     conn = None
     try:
         conn = psycopg2.connect(
-            dbname=POSTGRE_DB_NAME,
-            user=POSTGRE_DB_USER,
-            password=POSTGRE_DB_PASSWORD,
-            host=POSTGRE_DB_HOST
+            dbname=POSTGRES_DB_NAME,
+            user=POSTGRES_DB_USER,
+            password=POSTGRES_DB_PASSWORD,
+            host=POSTGRES_DB_HOST
         )
         cur = conn.cursor()
         yield cur
@@ -52,10 +52,10 @@ def connect():
     conn = None
     try:
         conn = psycopg2.connect(
-            dbname=POSTGRE_DB_NAME,
-            user=POSTGRE_DB_USER,
-            password=POSTGRE_DB_PASSWORD,
-            host=POSTGRE_DB_HOST
+            dbname=POSTGRES_DB_NAME,
+            user=POSTGRES_DB_USER,
+            password=POSTGRES_DB_PASSWORD,
+            host=POSTGRES_DB_HOST
         )
 
         cur = conn.cursor()

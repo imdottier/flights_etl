@@ -60,7 +60,7 @@ def write_delta_table(
                     df.write
                     .format("delta")
                     .mode("overwrite")
-                    # DO NOT use overwriteSchema here, as it conflicts with partitionBy on creation
+                    .option("overwriteSchema", "true")
                     .partitionBy(*partition_cols)
                     .save(table_path)
                 )
@@ -276,6 +276,7 @@ def merge_delta_table_with_scd(
     business_key: str,
     business_key_version: str,
     tracked_attribute_cols: dict[str, int],
+    business_cols: list[str],
     metadata_cols: list[str] = ["_ingested_at", "_inserted_at"],
 ):
     full_table_name = f"{db_name}.{table_name}"
@@ -331,38 +332,29 @@ def merge_delta_table_with_scd(
         align_schema(spark, arriving_df, full_table_name, table_path)
         
         target_table = DeltaTable.forPath(spark, table_path)
-        existing_df = target_table.toDF().alias("existing")
+        existing_df = target_table.toDF().alias("existing").filter("effective_end_date IS NULL")
         arriving_df = arriving_df.alias("arriving")
 
         # Perform the left join
-        compilation_df = existing_df.join(
-            arriving_df, on=business_key, how="left"
+        compilation_df = arriving_df.join(
+            existing_df, on=business_key, how="left"
         )
+
+        logging.info(f"Existing records: {existing_df.count()}")
+        logging.info(f"Arriving records: {arriving_df.count()}")
+
+        logging.info(f"Records to be merged: {compilation_df.count()}")
 
         # Apply the merge strategies
         all_cols = set(existing_df.columns) | set(arriving_df.columns)
 
-        # Allow custom error for certain columns
-        def apply_rounding(c, decimals, df_alias):
-            col_expr = col(f"{df_alias}.{c}")
-            if decimals != -1:
-                col_expr = spark_round(col_expr, decimals)
-            return col_expr
-
         # Build the hash
-        def build_hash(df_alias_primary, df_alias_fallback, tracked_cols):
+        def build_hash(df_alias, tracked_cols):
             return sha2(
                 concat_ws(
                     "|",
                     *[
-                        lower(trim(
-                            # To avoid considering non-null -> null as a change
-                            coalesce(
-                                apply_rounding(c, tracked_cols[c], df_alias_primary).cast("string"),
-                                apply_rounding(c, tracked_cols[c], df_alias_fallback).cast("string"),
-                                lit("NULL")
-                            )
-                        ))
+                        lower(trim(coalesce(col(f"{df_alias}.{c}").cast("string"), lit("NULL"))))
                         for c in tracked_cols
                     ]
                 ),
@@ -371,19 +363,25 @@ def merge_delta_table_with_scd(
 
         compilation_df = compilation_df.withColumn(
             "arriving_hash",
-            build_hash("arriving", "existing", tracked_attribute_cols)
+            build_hash("arriving", tracked_attribute_cols)
         ).withColumn(
             "existing_hash",
-            build_hash("existing", "arriving", tracked_attribute_cols)
+            build_hash("existing", tracked_attribute_cols)
         )
+
+        compilation_df.filter(
+            (col("arriving.length_feet") == 4300) &
+            (col("arriving.width_feet") == 150) &
+            (col("arriving.runway_name") == "22") &
+            (col("arriving.elevation_feet") == 692)
+        ).show(10)
 
         logging.info(f"Preparing expired and new records...")
 
         # Identify expired records
         expired_records = compilation_df.filter(
-            (col("existing_hash").isNotNull()) &
-            (col("arriving_hash") != col("existing_hash")) & 
-            (col(f"existing.effective_end_date").isNull())
+            (col(f"existing.{business_key_version}").isNotNull()) &
+            (col("arriving_hash") != col("existing_hash"))
         ).select(
             col(f"existing.{business_key_version}").alias(business_key_version),
             now.alias("effective_end_date")
@@ -391,13 +389,15 @@ def merge_delta_table_with_scd(
 
         # Identify new records, including new version of expired
         new_records = compilation_df.filter(
-            (col("existing_hash").isNull() |
-            (col("arriving_hash") != col("existing_hash"))) &
-            (col(f"existing.effective_end_date").isNull())
+            (col(f"existing.{business_key_version}").isNull() | # for new records
+            (col("arriving_hash") != col("existing_hash"))) # for updated records
         )
 
+        logging.info(f"Expired count: {expired_records.count()}, New count: {new_records.count()}")
+
+        # Business cols mainly for this
         select_exprs = [col(business_key)]
-        arriving_cols = list(tracked_attribute_cols.keys()) + metadata_cols
+        arriving_cols = list(tracked_attribute_cols.keys()) + metadata_cols + business_cols
         skip_cols = [business_key_version, business_key, "effective_start_date", "effective_end_date"]
 
         
@@ -426,6 +426,13 @@ def merge_delta_table_with_scd(
 
         all_records = new_records.unionByName(expired_records, allowMissingColumns=True)
         
+        all_records.filter(
+            (col("length_feet") == 4300) &
+            (col("width_feet") == 150) &
+            (col("runway_name") == "22") &
+            (col("elevation_feet") == 692)
+        ).show(10)
+
         # Perform the merge on version_key - PK of the table
         (
             target_table.alias("target").merge(

@@ -23,6 +23,7 @@ WITH base AS (
         SELECT generate_series('2000-01-01'::DATE, '2040-12-31'::DATE, '1 day'::INTERVAL) AS full_date
     ) AS d
 ),
+
 default_row AS (
     SELECT
         (-1) AS date_key,
@@ -30,7 +31,7 @@ default_row AS (
         0 AS day_of_month,
         'Unknown' AS day_name,
         0 AS day_of_week_iso,
-        0 AS day_of_year,      -- This column was missing in your original attempt
+        0 AS day_of_year, 
         0 AS week_of_year,
         0 AS month_of_year,
         'Unknown' AS month_name,

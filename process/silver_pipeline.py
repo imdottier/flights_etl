@@ -9,12 +9,12 @@ from process.utils import enrich_flights_data, csv_to_df
 from process.silver.aircrafts import write_aircrafts_data
 from process.silver.airlines import write_airlines_data
 from process.silver.airports import (
-    write_airports_data, write_openflights_airports_data,
-    filter_openflights_airports
+    write_airports_data, write_ourairports_airports_data,
+    filter_ourairports_airports
 ) 
-from process.silver.runways import write_runways_data, write_openflights_runways_data
+from process.silver.runways import write_runways_data, write_ourairports_runways_data
 from process.silver.flights import write_flights_data
-from process.silver.regions import write_openflights_regions_data
+from process.silver.regions import write_ourairports_regions_data
 
 from datetime import datetime, timezone, timedelta
 
@@ -99,11 +99,11 @@ def run_silver_pipeline(
         logging.info("="*50)
 
 
-def run_openflights_pipeline(
+def run_ourairports_pipeline(
     spark: SparkSession,
 ) -> None:
     """
-    Runs the pipeline that processes the OpenFlights data.
+    Runs the pipeline that processes the OurAirports data.
 
     :param spark: The SparkSession object
     :param batch_time: The datetime object representing the batch time
@@ -117,33 +117,33 @@ def run_openflights_pipeline(
     spark.sql("CREATE DATABASE IF NOT EXISTS silver")
 
     try:
-        logging.info("Loading OpenFlights data...")
-        # Load OpenFlights data from CSV files
-        openflights_airports = csv_to_df(spark, "airports.csv")
-        openflights_runways = csv_to_df(spark, "runways.csv")
-        openflights_regions = csv_to_df(spark, "regions.csv")
-        openflights_countries = csv_to_df(spark, "countries.csv")
+        logging.info("Loading OurAirports data...")
+        # Load OurAirports data from CSV files
+        ourairports_airports = csv_to_df(spark, "airports.csv")
+        ourairports_runways = csv_to_df(spark, "runways.csv")
+        ourairports_regions = csv_to_df(spark, "regions.csv")
+        ourairports_countries = csv_to_df(spark, "countries.csv")
 
         # Filter the airports data
-        filtered_airports = filter_openflights_airports(openflights_airports)
+        filtered_airports = filter_ourairports_airports(ourairports_airports)
 
         batch_time = datetime.now(timezone.utc)
 
-        logging.info("Writing OpenFlights data...")
+        logging.info("Writing OurAirports data...")
         # Write the data to the silver database
         if filtered_airports:
-            write_openflights_airports_data(spark, filtered_airports, batch_time)
+            write_ourairports_airports_data(spark, filtered_airports, batch_time)
         
-        if openflights_runways and filtered_airports:
-            write_openflights_runways_data(
-                spark, openflights_runways,
+        if ourairports_runways and filtered_airports:
+            write_ourairports_runways_data(
+                spark, ourairports_runways,
                 filtered_airports, batch_time
             )
 
-        if openflights_regions and openflights_countries:
-            write_openflights_regions_data(
-                spark, openflights_regions,
-                openflights_countries, batch_time
+        if ourairports_regions and ourairports_countries:
+            write_ourairports_regions_data(
+                spark, ourairports_regions,
+                ourairports_countries, batch_time
             )
     
     except Exception as e:

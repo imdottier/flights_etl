@@ -9,6 +9,13 @@ from sqlalchemy import pool
 
 from alembic import context
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))  # so we can import flight_etl
+
+# from models import Base  # import your Base from models.py
+
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -16,11 +23,11 @@ config = context.config
 load_dotenv()
 
 # Dynamically build connection string from environment variables
-DB_USER = os.getenv("POSTGRE_DB_USER", "postgres")
-DB_PASS = os.getenv("POSTGRE_DB_PASSWORD", "postgres")
-DB_HOST = os.getenv("POSTGRE_DB_HOST", "localhost")
-DB_PORT = os.getenv("POSTGRE_DB_PORT", "5432")
-DB_NAME = os.getenv("POSTGRE_DB_NAME", "flight_dw")
+DB_USER = os.getenv("POSTGRES_DB_USER", "postgres")
+DB_PASS = os.getenv("POSTGRES_DB_PASSWORD", "postgres")
+DB_HOST = os.getenv("POSTGRES_DB_HOST", "localhost")
+DB_PORT = os.getenv("POSTGRES_DB_PORT", "5432")
+DB_NAME = os.getenv("POSTGRES_DB_NAME", "flight_dw")
 
 connection_url = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 config.set_main_option("sqlalchemy.url", connection_url)

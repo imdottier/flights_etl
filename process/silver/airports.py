@@ -111,23 +111,23 @@ def write_airports_data(
         raise e
 
 
-def filter_openflights_airports(openflights_airports: DataFrame):
-    return openflights_airports.filter(
+def filter_ourairports_airports(ourairports_airports: DataFrame):
+    return ourairports_airports.filter(
         col("iata_code").isNotNull() | col("icao_code").isNotNull()
     )
     
 
-def write_openflights_airports_data(
+def write_ourairports_airports_data(
     spark: SparkSession,
-    openflights_airports: DataFrame,
+    ourairports_airports: DataFrame,
     batch_time: datetime
 ):
-    """Write openflights airports data to a Delta table."""
-    logging.info(f"Starting to write openflights airports data.")
+    """Write ourairports airports data to a Delta table."""
+    logging.info(f"Starting to write ourairports airports data.")
 
     try:
         logging.info("Cleaning detailed airport data.")
-        dim_airports_openflights_df = openflights_airports.withColumn(
+        dim_airports_ourairports_df = ourairports_airports.withColumn(
             "airport_bk",
             sha2(lower(trim(coalesce("iata_code", "icao_code"))), 256)
         ).withColumn(
@@ -138,32 +138,32 @@ def write_openflights_airports_data(
             "_inserted_at", current_timestamp()
         )
 
-        dim_airports_openflights_df = dim_airports_openflights_df.drop(
+        dim_airports_ourairports_df = dim_airports_ourairports_df.drop(
             "id", "ident", "continent",
             "home_link", "wikipedia_link", "keywords"
         )
 
-        select_exprs = get_select_expressions("silver", "dim_airports_openflights")
-        dim_airports_openflights_df = dim_airports_openflights_df.select(*select_exprs)
+        select_exprs = get_select_expressions("silver", "dim_airports_ourairports")
+        dim_airports_ourairports_df = dim_airports_ourairports_df.select(*select_exprs)
 
     except Exception as e:
-        logging.error(f"Failed during transformation step for dim_airports_openflights: {e}", exc_info=True)
+        logging.error(f"Failed during transformation step for dim_airports_ourairports: {e}", exc_info=True)
         raise
 
     try:
-        merge_strategy = get_merge_strategy("silver", "dim_airports_openflights")
+        merge_strategy = get_merge_strategy("silver", "dim_airports_ourairports")
 
-        logging.info(f"Writing {dim_airports_openflights_df.count()} rows to dim_airports_openflights table")
+        logging.info(f"Writing {dim_airports_ourairports_df.count()} rows to dim_airports_ourairports table")
         merge_delta_table(
             spark=spark,
-            arriving_df=dim_airports_openflights_df,
+            arriving_df=dim_airports_ourairports_df,
             db_name="silver",
             table_name="dim_airports",
             merge_keys=["airport_bk"],
             reconciliation_rules=merge_strategy
         )
-        logging.info("Successfully wrote dim_airports_openflights into Delta table")
+        logging.info("Successfully wrote dim_airports_ourairports into Delta table")
     
     except Exception as e:
-        logging.error(f"Failed to write dim_airports_openflights into Delta table: {e}", exc_info=True)
+        logging.error(f"Failed to write dim_airports_ourairports into Delta table: {e}", exc_info=True)
         raise

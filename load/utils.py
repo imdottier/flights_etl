@@ -124,7 +124,7 @@ def read_silver_layer_data(spark: SparkSession, watermarks: dict[str, datetime])
     dim_runways = read_df(spark, "silver", "dim_runways").drop("_data_hash")
     dim_airlines = read_df(spark, "silver", "dim_airlines").drop("_data_hash")
     dim_aircrafts = read_df(spark, "silver", "dim_aircrafts").drop("_data_hash")
-    dim_regions = read_df(spark, "silver", "dim_regions", optional=True) # Might not be here if no openflights data yet
+    dim_regions = read_df(spark, "silver", "dim_regions", optional=True) # Might not be here if no ourairports data yet
     fct_flights = read_fact_data_for_overwrite(
         spark, "silver", "fct_flights", last_watermarks["fct_flights"]
     )
@@ -284,71 +284,20 @@ def get_unknown_record_sql(table_name: str) -> str:
 def load_dimensions(spark: SparkSession, cursor, dims_to_load: dict[str, DataFrame]):
     """Loads multiple dimension tables and their 'Unknown' records within a single transaction."""
     dim_configs = {
-        "dim_runways": {"pk": ["runway_version_bk"]},
+        "dim_regions": {"pk": ["region_code"]},
         "dim_airports": {"pk": ["airport_bk"]},
+        "dim_runways": {"pk": ["runway_version_bk"]},
         "dim_airlines": {"pk": ["airline_bk"]},
         "dim_aircrafts": {"pk": ["aircraft_bk"]},
-        "dim_flight_details": {"pk": ["flight_status", "codeshare_status", "is_cargo"]},
-        "dim_quality_combination": {"pk": ["dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"]},
-        "dim_regions": {"pk": ["region_code"]},
     }
 
     for name, df in dims_to_load.items():
         if name in dim_configs:
             logging.info(f"Loading dimension: {name}")
             load_table_to_postgres(
-                spark=spark, df=df, target_schema="gold", target_table=name,
-                strategy="upsert", pk_cols=dim_configs[name]["pk"], cursor=cursor
+                spark=spark, df=df, target_schema="stg",
+                target_table=name, cursor=cursor   
             )
-
-            unknown_sql = get_unknown_record_sql(name)
-            if unknown_sql:
-                cursor.execute(unknown_sql)
-
-
-def enrich_facts_with_dw_keys(spark: SparkSession, silver_flights_df: DataFrame) -> DataFrame:
-    """Performs the full transformation of the silver fact data to the gold, load-ready state."""
-    logging.info("Reading dimension lookup tables from data warehouse...")
-    quality_lookup_df = read_df_from_postgres(spark, "gold", "dim_quality_combination")
-    flight_details_lookup_df = read_df_from_postgres(spark, "gold", "dim_flight_details")
-
-    logging.info("Enriching fact data with new dimension keys...")
-    fct_flights_df = silver_flights_df.withColumn(
-        "dep_has_basic", array_contains(col("dep_quality"), "Basic")
-    ).withColumn(
-        "dep_has_live", array_contains(col("dep_quality"), "Live")
-    ).withColumn(
-        "arr_has_basic", array_contains(col("arr_quality"), "Basic")
-    ).withColumn(
-        "arr_has_live", array_contains(col("arr_quality"), "Live")
-    )
-
-    fct_flights_df = fct_flights_df.join(
-        flight_details_lookup_df.select("flight_details_sk", "flight_status", "codeshare_status", "is_cargo"),
-        on=["flight_status", "codeshare_status", "is_cargo"], how="left"
-    ).join(
-        quality_lookup_df.select("quality_combo_sk", "dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"),
-        on=["dep_has_basic", "dep_has_live", "arr_has_basic", "arr_has_live"], how="left"
-    )
-
-    # Coalesce NULL foreign keys to -1
-    # Fill numeric keys
-    fct_flights_df = fct_flights_df.fillna({
-        "flight_details_sk": -1,
-        "quality_combo_sk": -1
-    })
-
-    # Fill SHA2 text keys
-    fct_flights_df = (
-        fct_flights_df
-        .withColumn("departure_runway_version_bk", when(col("departure_runway_version_bk").isNull(), sha2(lit("-1"), 256)).otherwise(col("departure_runway_version_bk")))
-        .withColumn("arrival_runway_version_bk", when(col("arrival_runway_version_bk").isNull(), sha2(lit("-1"), 256)).otherwise(col("arrival_runway_version_bk")))
-    )
-
-    select_exprs = get_select_expressions("gold", "fct_flights_intermediate")
-    final_df = fct_flights_df.select(*select_exprs)
-
-    return final_df
 
 
 def calculate_new_watermarks(spark: SparkSession, source_dfs: dict[str, DataFrame]) -> dict[str, datetime]:

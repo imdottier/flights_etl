@@ -1,6 +1,6 @@
 import logging
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, coalesce, lit, current_timestamp
+from pyspark.sql.functions import col, array_contains, lit, current_timestamp, format_string
 
 from utils.io_utils import read_df
 from process.io_utils import write_delta_table
@@ -68,6 +68,23 @@ def write_flights_data(
             "arrival_runway_version_bk",
             col("arr.runway_version_bk")
             # coalesce(col("arr.runway_bk"), lit(unknown_runway_bk))
+        )
+
+        fct_flights = fct_flights.withColumn(
+            "dep_has_basic", array_contains(col("departure_quality"), "Basic")
+        ).withColumn(
+            "dep_has_live", array_contains(col("departure_quality"), "Live")
+        ).withColumn(
+            "arr_has_basic", array_contains(col("arrival_quality"), "Basic")
+        ).withColumn(
+            "arr_has_live", array_contains(col("arrival_quality"), "Live")
+        ).withColumn(
+            "quality_desc",
+            format_string(
+                "Dep B:%s L:%s, Arr B:%s L:%s",
+                col("dep_has_basic"), col("dep_has_live"),
+                col("arr_has_basic"), col("arr_has_live")
+            )
         )
 
         # # Fill the null values of the runway sk with the unknown runway sk

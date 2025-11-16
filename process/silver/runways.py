@@ -71,7 +71,7 @@ def write_runways_data(
                     concat_ws(
                         "|",
                         col("airport_bk"),
-                        spark_round(col("true_hdg"), 1),
+                        spark_round(col("true_hdg"), 0),
                         spark_round(col("location_lat"), 4),
                         spark_round(col("location_lon"), 4),
                     ),
@@ -82,6 +82,20 @@ def write_runways_data(
             .withColumn("_inserted_at", current_timestamp())
         )
 
+        rounded_runways = flattened_runways_df
+        merge_strategy = get_merge_strategy("silver", "dim_runways")
+        for c, decimals in merge_strategy.items():
+            if decimals != -1:
+                rounded_runways = rounded_runways.withColumn(c, spark_round(c, decimals))
+        
+        rounded_runways = rounded_runways.withColumn(
+            "location_lat", spark_round(col("location_lat"), 4)
+        ).withColumn(
+            "location_lon", spark_round(col("location_lon"), 4)
+        ).withColumn(
+            "true_hdg", spark_round(col("true_hdg"), 1)
+        )
+
         # Get the select expressions for the dim_runways_df table
         select_exprs = get_select_expressions("silver", "dim_runways")
         dim_runways_df = flattened_runways_df.select(*select_exprs)
@@ -89,6 +103,10 @@ def write_runways_data(
         business_keys = ["airport_bk", "true_heading", "latitude", "longitude"]
         dim_runways_df = dim_runways_df.filter(
             reduce(lambda a, b: a & b, (col(c).isNotNull() for c in business_keys))
+        )
+
+        dim_runways_df = dim_runways_df.dropDuplicates(
+            subset=business_keys
         )
         # dim_runways_df = dim_runways_df.unionByName(unknown_runway_df)
 
@@ -99,27 +117,27 @@ def write_runways_data(
     try:
         # Actually always prefer the other source but for demonstration purposes,
         # data changes of a specific col can be tracked in both sources
-        merge_strategy = get_merge_strategy("silver", "dim_runways")
-
         logging.info(f"Writing {dim_runways_df.count()} records to dim_runways_df table")
         merge_delta_table_with_scd(
             spark=spark, arriving_df=dim_runways_df, db_name="silver",
             table_name="dim_runways", business_key="runway_bk",
-            business_key_version="runway_version_bk", tracked_attribute_cols=merge_strategy
+            business_key_version="runway_version_bk", tracked_attribute_cols=merge_strategy,
+            business_cols=business_keys,
         )
         logging.info("Successfully wrote dim_runways_df into Delta table")
+    
     except Exception as e:
         logging.error(f"Failed to write runways data: {e}", exc_info=True)
         raise e
     
 
-def write_openflights_runways_data(
+def write_ourairports_runways_data(
     spark: SparkSession,
-    openflights_runways: DataFrame,
-    openflights_airports: DataFrame,
+    ourairports_runways: DataFrame,
+    ourairports_airports: DataFrame,
     batch_time: datetime
 ) -> None:
-    logging.info(f"Starting to write openflights runways data")
+    logging.info(f"Starting to write ourairports runways data")
 
     try:
         # Common columns
@@ -154,14 +172,14 @@ def write_openflights_runways_data(
         ]
 
         # Build both DataFrames
-        low_end_runways = openflights_runways.select(*low_end_cols)
-        high_end_runways = openflights_runways.select(*high_end_cols)
+        low_end_runways = ourairports_runways.select(*low_end_cols)
+        high_end_runways = ourairports_runways.select(*high_end_cols)
         union_runways = low_end_runways.unionByName(high_end_runways)
 
         filtered_runways = (
             union_runways.join(
-                openflights_airports.select(col("iata_code"), col("icao_code"), col("ident")),
-                union_runways.airport_ident == openflights_airports.ident,
+                ourairports_airports.select(col("iata_code"), col("icao_code"), col("ident")),
+                union_runways.airport_ident == ourairports_airports.ident,
                 how="inner"
             ).filter(
                 # Business keys can't be null
@@ -171,8 +189,23 @@ def write_openflights_runways_data(
             )
         )
 
+        # Round columns, including tracked attributes and business keys
+        rounded_runways = filtered_runways
+        merge_strategy = get_merge_strategy("silver", "dim_runways_ourairports")
+        for c, decimals in merge_strategy.items():
+            if decimals != -1:
+                rounded_runways = rounded_runways.withColumn(c, spark_round(c, decimals))
+        
+        rounded_runways = rounded_runways.withColumn(
+            "latitude", spark_round(col("latitude"), 4)
+        ).withColumn(
+            "longitude", spark_round(col("longitude"), 4)
+        ).withColumn(
+            "true_heading", spark_round(col("true_heading"), 0)
+        )
+
         # Standardize columns
-        dim_runways_df = filtered_runways.withColumn(
+        dim_runways_df = rounded_runways.withColumn(
             "has_lighting", col("lighted") == 1
         ).withColumn(
             "is_closed", col("closed") == 1
@@ -202,21 +235,24 @@ def write_openflights_runways_data(
         )
 
         # Apply columns order
-        select_exprs = get_select_expressions("silver", "dim_runways_openflights")
+        select_exprs = get_select_expressions("silver", "dim_runways_ourairports")
         dim_runways_df = dim_runways_df.select(*select_exprs)
+
+        dim_runways_df = dim_runways_df.dropDuplicates(
+            subset=["airport_bk", "true_heading", "latitude", "longitude"]
+        )
 
     except Exception as e:
         logging.error(f"Failed during transformation step for dim_runways: {e}", exc_info=True)
         raise
 
     try:
-        merge_strategy = get_merge_strategy("silver", "dim_runways_openflights")
-
         logging.info(f"Writing {dim_runways_df.count()} records to dim_runways_df table")
         merge_delta_table_with_scd(
             spark=spark, arriving_df=dim_runways_df, db_name="silver",
             table_name="dim_runways", business_key="runway_bk",
-            business_key_version="runway_version_bk", tracked_attribute_cols=merge_strategy
+            business_key_version="runway_version_bk", tracked_attribute_cols=merge_strategy,
+            business_cols=["airport_bk", "true_heading", "latitude", "longitude"],
         )
         logging.info("Successfully wrote dim_runways_df into Delta table")
     except Exception as e:

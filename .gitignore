@@ -22,3 +22,16 @@ dbt_packages/
 **/example/
 
 csv/
+
+# Airflow local database
+airflow.db
+
+# Airflow logs
+logs/
+*.log
+
+# SQLite database for testing
+*.sqlite
+
+# Airflow authentication
+simple_auth_manager_passwords.json.generated

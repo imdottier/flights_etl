@@ -1,0 +1,405 @@
+# =================================================================
+# PART 2: MODELS
+# Describes the tables/views created by your dbt .sql files.
+# =================================================================
+models:
+  - name: dim_regions
+    description: "Unified region data, including fallback resolution."
+    columns:
+      - name: region_code
+        description: "Primary business key for the region (resolved with fallback)."
+        tests:
+          - not_null
+          - unique
+      - name: region_name
+        description: "Region name."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_regions')
+                field: region_code
+      - name: local_code
+        description: "Local code for the region."
+      - name: continent_code
+        description: "Continent code."
+      - name: iso_country
+        description: "ISO country code (resolved)."
+      - name: country_name
+        description: "Country name (resolved)."
+      - name: _ingested_at
+        description: "Timestamp when the record was ingested."
+      - name: _inserted_at
+        description: "Timestamp when the record was inserted."
+
+  - name: dim_airports
+    description: "Unified airport data with region/country fallbacks applied."
+    columns:
+      - name: airport_bk
+        description: "Hashed business key for the airport."
+        tests:
+          - not_null
+          - unique
+      - name: iso_region
+        description: "Resolved ISO region code for the airport."
+      - name: iso_country
+        description: "Resolved ISO country code for the airport."
+      - name: country_name
+        description: "Resolved country name for the airport."
+      - name: airport_iata
+      - name: airport_icao
+      - name: airport_gps
+      - name: airport_local_code
+      - name: airport_name
+      - name: municipality_name
+      - name: latitude
+      - name: longitude
+      - name: elevation_feet
+      - name: airport_type
+      - name: scheduled_service
+      - name: airport_time_zone
+      - name: _ingested_at
+      - name: _inserted_at
+
+  - name: dim_aircrafts
+    description: "Aircraft dimension table"
+    columns:
+      - name: aircraft_bk
+        description: "Business key of the aircraft"
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_airlines
+    description: "Airline dimension table"
+    columns:
+      - name: airline_bk
+        description: "Business key of the airline"
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_runways
+    description: "Runway dimension table."
+    columns:
+      - name: runway_version_key
+        description: "Surrogate key / version key for runway."
+        tests:
+          - unique
+          - not_null
+      - name: runway_bk
+        description: "Business key (from source system)."
+        tests:
+          - unique
+          - not_null
+
+  # --------------------
+  # Fact table
+  # --------------------
+  - name: fct_flights
+    description: "Fact table of flight data with derived measures."
+    columns:
+      - name: flight_composite_pk
+        description: "Primary key of flight (composite)."
+        tests:
+          - unique
+          - not_null
+
+      - name: departure_airport_bk
+        description: "FK to departure airport."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airports')
+                field: airport_bk
+
+      - name: arrival_airport_bk
+        description: "FK to arrival airport."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airports')
+                field: airport_bk
+
+      - name: airline_bk
+        description: "FK to airline dimension."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airlines')
+                field: airline_bk
+
+      - name: aircraft_bk
+        description: "FK to aircraft dimension."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_aircrafts')
+                field: aircraft_bk
+
+      - name: departure_runway_version_key
+        description: "FK to departure runway dimension."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_runways')
+                field: runway_version_key
+
+      - name: arrival_runway_version_key
+        description: "FK to arrival runway dimension."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_runways')
+                field: runway_version_key
+
+      - name: departure_date_key
+        description: "FK to dim_dates.date_key for departure date"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_dates')
+                field: date_key
+
+      - name: arrival_date_key
+        description: "FK to dim_dates.date_key for arrival date"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_dates')
+                field: date_key
+
+      - name: distance_km
+        description: "Haversine distance between airports."
+        tests:
+          - not_null
+
+      - name: avg_speed_kmh
+        description: "Average speed of the flight in km/h."
+
+      - name: is_on_time
+        description: "Whether flight arrived on time."
+
+      - name: flight_type
+        description: "Short / Medium / Long haul category."
+
+      - name: is_cancelled
+        description: "Flag if flight is cancelled."
+
+      - name: departure_date_key
+        description: "Date key for departure date (YYYYMMDD format) for joining to dim_dates."
+
+      - name: arrival_date_key
+        description: "Date key for arrival date (YYYYMMDD format) for joining to dim_dates."
+
+      - name: dep_hour_utc
+        description: "Hour of day (0-23) when departure was scheduled in UTC."
+
+      - name: dep_day_of_week
+        description: "Day of week (0=Sunday, 6=Saturday) for scheduled departure."
+
+      - name: arr_hour_utc
+        description: "Hour of day (0-23) when arrival was scheduled in UTC."
+
+      - name: arr_day_of_week
+        description: "Day of week (0=Sunday, 6=Saturday) for scheduled arrival."
+
+      - name: scheduled_duration_minutes
+        description: "Scheduled flight duration in minutes (arrival - departure scheduled times)."
+
+      - name: actual_duration_minutes
+        description: "Actual flight duration in minutes (arrival - departure runway times)."
+
+      - name: delay_departure_minutes
+        description: "Departure delay in minutes (actual runway departure - scheduled departure). Positive values indicate delay, negative indicate early departure."
+
+      - name: delay_arrival_minutes
+        description: "Arrival delay in minutes (actual runway arrival - scheduled arrival). Positive values indicate delay, negative indicate early arrival."
+
+      - name: taxi_out_minutes
+        description: "Taxi-out time in minutes (time from revised departure to runway departure)."
+
+      - name: schedule_variance_minutes
+        description: "Difference between actual and scheduled duration in minutes (actual_duration_minutes - scheduled_duration_minutes)."
+
+      - name: departure_delay_category
+        description: "Categorical classification of departure delay: 'Early' (≤0 min), 'On Time' (1-15 min), 'Minor Delay' (16-60 min), 'Major Delay' (>60 min)."
+
+      - name: arrival_delay_category
+        description: "Categorical classification of arrival delay: 'Early' (≤0 min), 'On Time' (1-15 min), 'Minor Delay' (16-60 min), 'Major Delay' (>60 min)."
+
+      - name: made_up_time_in_air
+        description: "Boolean flag indicating if the flight made up time during flight (departure delayed >15 min but arrival on time ≤15 min delay)."
+
+  - name: dim_dates
+    description: "A static dimension table containing a record for each date, enriched with calendar attributes."
+    columns:
+      - name: date_key
+        description: "The primary key for the date dimension (format YYYYMMDD)."
+        tests:
+          - unique
+          - not_null
+      - name: full_date
+        description: "The full date (e.g., '2025-06-01')."
+        tests:
+          - unique
+          - not_null
+      - name: day_of_month
+      - name: day_name
+      - name: day_of_week_iso
+      - name: day_of_year
+      - name: week_of_year
+      - name: month_of_year
+      - name: month_name
+      - name: quarter_of_year
+      - name: year
+      - name: is_weekend
+
+#   - name: fct_flights_final
+#     description: "Final, enriched fact table for flights. This model joins all dimension keys and adds calculated measures like delays and durations."
+#     columns:
+#       - name: fact_flight_id
+#         description: "The unique surrogate primary key for the fact table."
+#         tests:
+#           - unique
+#           - not_null
+
+#       - name: flight_composite_pk
+#         description: "The natural key of the flight event."
+#         tests:
+#           - unique
+#           - not_null
+
+#       - name: flight_details_sk
+#         description: "Foreign key to the flight details dimension."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_flight_details')
+#               field: flight_details_sk
+
+#       - name: departure_airport_sk
+#         description: "Foreign key to the airports dimension for the departure airport."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_airports')
+#               field: airport_sk
+
+#       - name: arrival_airport_sk
+#         description: "Foreign key to the airports dimension for the arrival airport."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_airports')
+#               field: airport_sk
+
+#       - name: airline_sk
+#         description: "Foreign key to the airlines dimension."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_airlines')
+#               field: airline_sk
+
+#       - name: aircraft_sk
+#         description: "Foreign key to the aircraft dimension."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_aircrafts')
+#               field: aircraft_sk
+
+#       - name: departure_runway_version_key
+#         description: "Foreign key to the runways dimension for the departure runway version."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_runways')
+#               field: runway_version_key
+
+#       - name: arrival_runway_version_key
+#         description: "Foreign key to the runways dimension for the arrival runway version."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_runways')
+#               field: runway_version_key
+
+#       - name: quality_combo_sk
+#         description: "Foreign key to the data quality dimension."
+#         tests:
+#           - relationships:
+#               to: source('gold_layer', 'dim_quality_combination')
+#               field: quality_combo_sk
+              
+#       - name: departure_date_key
+#         description: "Foreign key to the date dimension for the departure date."
+#         tests:
+#           - relationships:
+#               to: ref('dim_dates')
+#               field: date_key
+
+#       - name: arrival_date_key
+#         description: "Foreign key to the date dimension for the arrival date."
+#         tests:
+#           - relationships:
+#               to: ref('dim_dates')
+#               field: date_key
+
+#       - name: flight_number
+#         description: "The flight number (e.g., 'FR 2506')."
+#       - name: flight_callsign
+#         description: "The flight callsign used for ATC communication."
+#       - name: dep_terminal
+#         description: "Departure terminal."
+#       - name: arr_gate
+#         description: "Arrival gate."
+#       - name: dep_checkin_desk
+#         description: "Departure check-in desk."
+#       - name: dep_gate
+#         description: "Departure gate."
+#       - name: arr_terminal
+#         description: "Arrival terminal."
+#       - name: arr_baggage_belt
+#         description: "Arrival baggage belt."
+#       - name: dep_local_timezone
+#         description: "Departure airport's local timezone (e.g., '+02:00')."
+#       - name: arr_local_timezone
+#         description: "Arrival airport's local timezone (e.g., '+01:00')."
+#       - name: dep_scheduled_at_utc
+#         description: "Scheduled departure time in UTC."
+#       - name: dep_revised_at_utc
+#         description: "Revised departure time in UTC."
+#       - name: dep_runway_at_utc
+#         description: "Actual time the aircraft left the runway for departure in UTC."
+#       - name: arr_scheduled_at_utc
+#         description: "Scheduled arrival time in UTC."
+#       - name: arr_revised_at_utc
+#         description: "Revised arrival time in UTC."
+#       - name: arr_runway_at_utc
+#         description: "Actual time the aircraft reached the runway on arrival in UTC."
+#       - name: last_location_reported_at_utc
+#         description: "The last timestamp a location update was received in UTC."
+#       - name: latitude
+#         description: "Last reported latitude."
+#       - name: longitude
+#         description: "Last reported longitude."
+#       - name: altitude_ft
+#         description: "Last reported altitude in feet."
+#       - name: ground_speed_kts
+#         description: "Last reported ground speed in knots."
+#       - name: true_track_deg
+#         description: "Last reported true track in degrees."
+#       - name: ingestion_hour
+#         description: "The hour of the day the data was ingested (YYYY-MM-DD-HH)."
+#       - name: _ingested_at
+#         description: "Timestamp when the record was first ingested into the system."
+#       - name: _inserted_at
+#         description: "Timestamp when the record was inserted into this table by dbt."
+#         tests:
+#           - not_null
+#       - name: flight_date
+#         description: "The date of the flight."
+#         tests:
+#           - not_null

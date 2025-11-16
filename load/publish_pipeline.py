@@ -15,7 +15,7 @@ from utils.expression_utils import get_select_expressions
 
 from load.utils import (
     read_silver_layer_data, create_derived_dimensions,
-    load_dimensions, enrich_facts_with_dw_keys, calculate_new_watermarks,
+    load_dimensions, calculate_new_watermarks,
     reconcile_airport_regions
 )
 
@@ -23,9 +23,8 @@ from datetime import datetime
 
 def run_publish_pipeline(
     spark: SparkSession,
-    batch_time: datetime,
 ):
-    """Orchestrates the Silver-to-Gold pipeline, publishing data to the data warehouse."""
+    """Orchestrates the Silver-to-Staging pipeline, publishing data to the data warehouse."""
     logging.info("="*50)
     logging.info("=== Starting the publish pipeline ===")
     logging.info("="*50)
@@ -35,54 +34,38 @@ def run_publish_pipeline(
         logging.info("Reading existing watermarks...")
         existing_watermarks = get_all_watermarks(spark)
         
-        # --- 2. Read All Source Data from Silver Layer ---
         logging.info("Reading source data from Silver layer...")
         silver_dfs = read_silver_layer_data(spark, existing_watermarks)
-
-        # --- 3. Synthesize New Dimension DataFrames in Spark ---
-        logging.info("Creating derived dimension DataFrames...")
-        derived_dims_dfs = create_derived_dimensions(silver_dfs["fct_flights"], batch_time)
-
         new_watermarks = calculate_new_watermarks(spark, silver_dfs)
 
-        # Combine all dimension DataFrames for loading
-        all_dims_to_load = {
-            "dim_airports": silver_dfs["dim_airports"],
-            "dim_runways": silver_dfs["dim_runways"],
-            "dim_airlines": silver_dfs["dim_airlines"],
-            "dim_aircrafts": silver_dfs["dim_aircrafts"],
-            "dim_regions": silver_dfs["dim_regions"],
-            **derived_dims_dfs # Adds the new flight_details and quality_combination dfs
+        # --- 2. Define the mapping from Silver to Staging tables ---
+        tables_to_load = {
+            # Silver DataFrame Key : Staging Table Name
+            "dim_regions": "regions",
+            "dim_airports": "airports",
+            "dim_runways": "runways",
+            "dim_airlines": "airlines",
+            "dim_aircrafts": "aircrafts",
+            "fct_flights": "flights", # Facts are treated the same!
         }
 
-        # Reconcile iso_region for dim_airports
-        if "dim_regions" in silver_dfs:
-            dim_airports, dim_regions = reconcile_airport_regions(
-                silver_dfs["dim_airports"], silver_dfs["dim_regions"]
-            )
-
-            all_dims_to_load["dim_airports"] = dim_airports
-            all_dims_to_load["dim_regions"] = dim_regions
-
-        # --- 4. Load All Dimensions Atomically to the Data Warehouse ---
-        logging.info("Loading all dimension tables into the data warehouse...")
+        # --- 3. Load ALL tables into Staging within a single transaction context ---
+        logging.info("Loading all new data into the staging schema...")
         with transaction_context() as master_cursor:
-            load_dimensions(spark, master_cursor, all_dims_to_load)
+            for silver_key, staging_table in tables_to_load.items():
+                if silver_key in silver_dfs and silver_dfs[silver_key].count() > 0:
+                    logging.info(f"Loading data for '{silver_key}' into 'stg.{staging_table}'")
+                    load_table_to_postgres(
+                        spark=spark,
+                        df=silver_dfs[silver_key],
+                        target_schema="stg",
+                        target_table=staging_table,
+                        cursor=master_cursor
+                    )
+                else:
+                    logging.info(f"No new data for '{silver_key}'. Skipping.")
 
-        # --- 5. Enrich Fact Data with Warehouse Keys ---
-        logging.info("Enriching fact data with newly loaded dimension keys...")
-        gold_fct_df = enrich_facts_with_dw_keys(spark, silver_dfs["fct_flights"])
-
-        with transaction_context() as master_cursor:
-            # --- 6. Load the Final, Enriched Fact Table ---
-            logging.info("Loading final Gold fact table...")
-            load_table_to_postgres(
-                spark=spark, df=gold_fct_df, target_schema="gold", target_table="fct_flights_intermediate",
-                strategy="delete_insert", partition_key_col="flight_date", cursor=master_cursor,
-                exclude_cols=["fact_flight_id"],
-            )
-
-            # --- 7. Update Watermarks ---
+            # --- 4. Update Watermarks ---
             logging.info("Updating watermarks...")
             write_watermarks(master_cursor, new_watermarks)
         

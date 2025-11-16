@@ -9,20 +9,20 @@ from utils.expression_utils import get_select_expressions, get_merge_strategy
 
 from datetime import datetime
 
-def write_openflights_regions_data(
+def write_ourairports_regions_data(
     spark: SparkSession,
-    openflights_regions: DataFrame,
-    openflights_countries: DataFrame,
+    ourairports_regions: DataFrame,
+    ourairports_countries: DataFrame,
     batch_time: datetime
 ) -> None:
     """
     Combine regions and countries data into dim_regions_df (more regions than countries)
     Then write to delta table
     """
-    logging.info("Starting to write openflights regions data.")
+    logging.info("Starting to write ourairports regions data.")
     try:
-        dim_regions_df = openflights_regions.alias("regions").join(
-            openflights_countries.alias("countries").select(
+        dim_regions_df = ourairports_regions.alias("regions").join(
+            ourairports_countries.alias("countries").select(
                 col("code").alias("country_code"),
                 col("name").alias("country_name")
             ),

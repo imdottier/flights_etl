@@ -1,0 +1,142 @@
+version: 2
+
+sources:
+  - name: staging # This is the "source" name we'll use in dbt's ref() function
+    database: flights_dw # Or your postgres database name
+    schema: stg # The schema your Spark job loads data into
+    
+    # Define each table that your Spark job creates
+    tables:
+      - name: regions
+        identifier: regions # The actual table name in the 'stg' schema
+        description: "Raw region data loaded from the Silver layer."
+        columns:
+          - name: region_code
+            description: "The natural business key for a region (e.g., 'US-CA')."
+            tests:
+              - unique
+              - not_null
+
+      - name: airlines
+        identifier: airlines
+        description: "Raw airline data loaded from the Silver layer."
+        columns:
+          - name: airline_bk
+            description: "The hashed business key for an airline."
+            tests:
+              - unique
+              - not_null
+
+      - name: aircrafts
+        identifier: aircrafts
+        description: "Raw aircraft data loaded from the Silver layer."
+        columns:
+          - name: aircraft_bk
+            description: "The hashed business key for an aircraft."
+            tests:
+              - unique
+              - not_null
+
+      - name: airports
+        identifier: airports
+        description: "Raw airport data loaded from the Silver layer."
+        columns:
+          - name: airport_bk
+            description: "The hashed business key for an airport."
+            tests:
+              - unique
+              - not_null
+          - name: iso_region
+            description: "The region code this airport belongs to."
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('staging', 'regions')
+                    field: region_code
+
+      - name: runways
+        identifier: runways
+        description: "Raw, versioned runway data (SCD2) from the Silver layer."
+        columns:
+          - name: runway_version_bk
+            description: "The hashed business key for a specific version of a runway."
+            tests:
+              - unique
+              - not_null
+          - name: airport_bk
+            description: "The business key of the airport this runway belongs to."
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('staging', 'airports')
+                    field: airport_bk
+
+      - name: flights
+        identifier: flights
+        description: "Raw, partitioned flight data from the Silver layer."
+        columns:
+          - name: flight_composite_pk
+            description: "The unique business key for a flight record."
+            tests:
+              - unique
+              - not_null
+          
+          # These are the Foreign Key checks you asked for.
+          # They test that the values in this column exist in the corresponding dimension staging table.
+          # The columns are nullable, so the test will pass for null values but fail for "orphan" keys.
+          - name: departure_airport_bk
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('staging', 'airports')
+                    field: airport_bk
+          - name: arrival_airport_bk
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('staging', 'airports')
+                    field: airport_bk
+          - name: airline_bk
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('staging', 'airlines')
+                    field: airline_bk
+          - name: aircraft_bk
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('staging', 'aircrafts')
+                    field: aircraft_bk
+          - name: departure_runway_version_bk
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('staging', 'runways')
+                    field: runway_version_bk
+          - name: arrival_runway_version_bk
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('staging', 'runways')
+                    field: runway_version_bk
+
+  # You can keep your dwh_meta source here as well
+  - name: dwh_meta
+    database: flights_dw
+    schema: dwh_meta
+    tables:
+      - name: _dwh_watermarks
+        description: "Stores high-watermark timestamps for ETL loading processes."
+        columns:
+          - name: table_name
+            description: "The name of the table the watermark applies to."
+            tests:
+              - unique
+              - not_null
+          - name: last_inserted_at
+            description: "The latest _inserted_at timestamp successfully loaded for this table."
+
+
+

@@ -12,7 +12,7 @@ from utils.spark_session import get_spark_session
 from crawler.time_utils import generate_batch_timestamps, valid_date_format
 from crawler.run_crawl_pipeline import run_crawl_pipeline
 from process.bronze_pipeline import run_bronze_pipeline
-from process.silver_pipeline import run_silver_pipeline, run_openflights_pipeline
+from process.silver_pipeline import run_silver_pipeline, run_ourairports_pipeline
 
 from load.publish_pipeline import run_publish_pipeline
 
@@ -21,7 +21,7 @@ def run_full_pipeline(
     process_detailed_dims: bool,
     skip_crawl: bool,
     run_aerodatabox: bool = True,
-    run_openflights: bool = False,
+    run_ourairports: bool = False,
 ):
     """
     Executes the entire data pipeline from crawl through silver.
@@ -50,15 +50,15 @@ def run_full_pipeline(
             logging.info(f">>> SILVER STAGE COMPLETED <<<")
             stage_counter += 1
 
-        if run_openflights:
-            logging.info(f">>> STAGE {stage_counter}: OPENFLIGHTS <<<")
-            run_openflights_pipeline(spark=spark)
-            logging.info(f">>> OPENFLIGHTS STAGE COMPLETED <<<")
+        if run_ourairports:
+            logging.info(f">>> STAGE {stage_counter}: OURAIRPORTS <<<")
+            run_ourairports_pipeline(spark=spark)
+            logging.info(f">>> OURAIRPORTS STAGE COMPLETED <<<")
             stage_counter += 1
 
-        # logging.info(f">>> STAGE {stage_counter}: PUBLISH <<<")
-        # run_publish_pipeline(spark=spark, batch_time=batch_time)
-        # logging.info(f">>> PUBLISH STAGE COMPLETED <<<")
+        logging.info(f">>> STAGE {stage_counter}: PUBLISH <<<")
+        run_publish_pipeline(spark=spark)
+        logging.info(f">>> PUBLISH STAGE COMPLETED <<<")
 
     finally:
         # Ensure Spark is stopped even if a stage fails
@@ -87,9 +87,9 @@ if __name__ == "__main__":
         help="Run the main daily/hourly flights ETL pipeline."
     )
     parser.add_argument(
-        '--run-openflights',
+        '--run-ourairports',
         action='store_true',
-        help="Run the static data enrichment pipeline for OpenFlights data."
+        help="Run the static data enrichment pipeline for OurAirports data."
     )
 
     
@@ -176,7 +176,7 @@ if __name__ == "__main__":
             process_detailed_dims=should_process_details,
             skip_crawl=args.skip_crawl,
             run_aerodatabox=args.run_aerodatabox,
-            run_openflights=args.run_openflights
+            run_ourairports=args.run_ourairports
         )
 
         logging.info("==================================================")

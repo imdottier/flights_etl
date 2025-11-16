@@ -5,6 +5,10 @@ from datetime import datetime, timezone, timedelta
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, date_format, date_trunc, coalesce, lit
+from pyspark.sql.types import (
+    IntegerType, StringType, LongType, DoubleType, ShortType,
+    FloatType, DecimalType, TimestampType, DateType, BooleanType
+)
 
 from psycopg2 import sql
 from psycopg2.extras import execute_values
@@ -12,37 +16,63 @@ from load.database import transaction_context
 
 load_dotenv()
 
-POSTGRE_DB_NAME = os.getenv("POSTGRE_DB_NAME")
-POSTGRE_DB_USER = os.getenv("POSTGRE_DB_USER")
-POSTGRE_DB_PASSWORD = os.getenv("POSTGRE_DB_PASSWORD")
-POSTGRE_DB_HOST = os.getenv("POSTGRE_DB_HOST")
+POSTGRES_DB_NAME = os.getenv("POSTGRES_DB_NAME")
+POSTGRES_DB_USER = os.getenv("POSTGRES_DB_USER")
+POSTGRES_DB_PASSWORD = os.getenv("POSTGRES_DB_PASSWORD")
+POSTGRES_DB_HOST = os.getenv("POSTGRES_DB_HOST")
 
 
-pg_url = f"jdbc:postgresql://{POSTGRE_DB_HOST}/{POSTGRE_DB_NAME}"
+pg_url = f"jdbc:postgresql://{POSTGRES_DB_HOST}/{POSTGRES_DB_NAME}"
 pg_properties = {
-    "user": POSTGRE_DB_USER,
-    "password": POSTGRE_DB_PASSWORD,
+    "user": POSTGRES_DB_USER,
+    "password": POSTGRES_DB_PASSWORD,
     "driver": "org.postgresql.Driver"
 }
 
 
 def get_postgres_table_schema(cursor, schema: str, table: str) -> list[str]:
-    cursor.execute(f"""
-        SELECT column_name
+    cursor.execute("""
+        SELECT column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
     """, (schema, table))
-    return [r[0] for r in cursor.fetchall()]
+    
+    return {row[0]: row[1] for row in cursor.fetchall()}
 
 
-def align_df_to_postgres(df: DataFrame, target_columns: list[str]) -> DataFrame:
+# --- 2. Map Postgres types to Spark types ---
+PG_TO_SPARK_TYPE = {
+    "integer": IntegerType(),
+    "bigint": LongType(),
+    "smallint": ShortType(),
+    "numeric": DecimalType(38, 18),
+    "real": FloatType(),
+    "double precision": DoubleType(),
+    "boolean": BooleanType(),
+    "text": StringType(),
+    "character varying": StringType(),
+    "timestamp without time zone": TimestampType(),
+    "timestamp with time zone": TimestampType(),
+    "date": DateType(),
+    # Add more types as needed
+}
+
+
+def align_df_to_postgres(df: DataFrame, target_columns: dict[str, str]) -> DataFrame:
     # Add missing columns with nulls
-    for col in target_columns:
-        if col not in df.columns:
-            df = df.withColumn(col, lit(None))
-    # Reorder to match target schema
-    return df.select(target_columns)
+    for col_name, pg_type in target_columns.items():
+        spark_type = PG_TO_SPARK_TYPE.get(pg_type, StringType())
+        
+        if col_name not in df.columns:
+            # Add missing column with null cast to Spark type
+            df = df.withColumn(col_name, lit(None).cast(spark_type))
+        else:
+            # Cast existing column to correct Spark type
+            df = df.withColumn(col_name, col(col_name).cast(spark_type))
+    
+    # Reorder columns
+    return df.select(list(target_columns.keys()))
 
 
 def load_table_to_postgres(
@@ -50,198 +80,37 @@ def load_table_to_postgres(
     df: DataFrame,
     target_schema: str,
     target_table: str,
-    strategy: str,
-    pk_cols: list[str] | None = None,
-    partition_key_col: str | None = None, 
-    cursor=None,
-    exclude_cols: list[str] | None = None,
+    cursor
 ):
-    # --- 1. Input Validation ---
-    if strategy == "upsert" and not pk_cols:
-        raise ValueError("pk_cols is required for 'upsert' strategy.")
-    if strategy == "delete_insert" and not partition_key_col:
-        raise ValueError("partition_key_col is required for 'delete_insert' strategy.")
-
-    full_table_name_str = f"{target_schema}.{target_table}"
-    full_table_identifier = sql.Identifier(target_schema, target_table)
-    temp_table_name = f"temp_{target_schema}_{target_table}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    temp_table_identifier = sql.Identifier(temp_table_name)
+    """
+    Loads a DataFrame into a PostgreSQL table.
+    """
+    full_table_name = f"{target_schema}.{target_table}"
 
     try:
         with transaction_context(cursor) as cur:
             target_columns = get_postgres_table_schema(cursor, target_schema, target_table)
             df = align_df_to_postgres(df, target_columns)
+        
+        write_options = {
+            "url": pg_url,
+            "dbtable": full_table_name,
+            "truncate": "true"
+        }
 
         # --- 2. Write to Temporary Table ---
-        logging.info(f"Writing to temp table: {temp_table_name}...")
-        df.write.jdbc(url=pg_url, table=temp_table_name, mode="overwrite", properties=pg_properties)
+        logging.info(f"Writing to staging table: {full_table_name}...")
+        df.write \
+            .format("jdbc") \
+            .options(**write_options) \
+            .options(**pg_properties) \
+            .mode("overwrite") \
+            .save()
         logging.info(f"Successfully wrote to temporary table.")
 
-        all_columns = sql.SQL(",").join(sql.Identifier(c) for c in df.columns)
-
-        with transaction_context(cursor) as cur:
-            # This probably not used now
-            # --- 3. Merge into Target Table ---
-            if strategy == "upsert":
-                pk_columns_str = sql.SQL(", ").join(sql.Identifier(c) for c in pk_cols)
-                non_pk_cols = [col for col in df.columns if col not in pk_cols]
-                update_set_clauses = [
-                    sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col))
-                    for col in non_pk_cols
-                ]
-                
-                if not update_set_clauses:
-                    merge_sql = sql.SQL("""
-                        INSERT INTO {table_name} ({all_columns})
-                        SELECT {all_columns} FROM {temp_table_name}
-                        ON CONFLICT ({pk_columns}) DO NOTHING
-                    """).format(
-                        table_name=full_table_identifier,
-                        all_columns=all_columns,
-                        temp_table_name=temp_table_identifier,
-                        pk_columns=pk_columns_str
-                    )
-                else:
-                    update_set_str = sql.SQL(", ").join(update_set_clauses)
-                    merge_sql = sql.SQL("""
-                        INSERT INTO {table_name} ({all_columns})
-                        SELECT {all_columns} FROM {temp_table_name}
-                        ON CONFLICT ({pk_columns}) DO UPDATE SET
-                            {update_set}
-                    """).format(
-                        table_name=full_table_identifier,
-                        all_columns=all_columns,
-                        temp_table_name=temp_table_identifier,
-                        pk_columns=pk_columns_str,
-                        update_set=update_set_str
-                    )
-                
-                logging.info(f"Executing merge SQL from {temp_table_name} to {full_table_name_str}...")
-                cur.execute(merge_sql)
-                logging.info("Merge operation complete.")
-
-            # For partitioned tables
-            elif strategy == "delete_insert":
-                # --- 1. Get the Data Values
-                # This data comes from the DataFrame and is "untrusted"
-                partition_values = tuple([row[0] for row in df.select(partition_key_col).distinct().collect()])
-
-                if not partition_values:
-                    logging.warning(f"No partition values found in DataFrame for key '{partition_key_col}'. Skipping delete_insert.")
-                    # We can exit early as there's nothing to delete or insert.
-
-                # Compose the DELETE statement
-                # The data placeholder '%s' remains the same.
-                delete_sql = sql.SQL("""
-                    DELETE FROM {target_table}
-                    WHERE {partition_key} IN %s;
-                """).format(
-                    target_table=full_table_identifier,
-                    partition_key=sql.Identifier(partition_key_col)
-                )
-
-                if exclude_cols:
-                    insert_cols = [c for c in df.columns if c not in exclude_cols]
-                else:
-                    insert_cols = df.columns
-                insert_cols_sql = sql.SQL(",").join(
-                    sql.Identifier(c) for c in insert_cols
-                )
-
-                # Compose the INSERT statement
-                insert_sql = sql.SQL("""
-                    INSERT INTO {target_table} ({all_columns})
-                    SELECT {all_columns} FROM {temp_table};
-                """).format(
-                    target_table=full_table_identifier,
-                    all_columns=insert_cols_sql,
-                    temp_table=temp_table_identifier
-                )
-
-                # --- 2. Execute the Queries ---
-                logging.info(f"Executing DELETE for partitions in {full_table_name_str}...")
-                
-                # The execution is the same: pass the composed SQL object and the tuple of data values
-                cur.execute(delete_sql, (partition_values,))
-                logging.info(f"Deleted {cur.rowcount} rows.")
-
-                logging.info(f"Executing INSERT from {temp_table_name}...")
-                cur.execute(insert_sql)
-                logging.info(f"Inserted {cur.rowcount} rows. Transaction complete.")
-
-            # Truncate and Insert, used for dimension tables since they are small
-            # Well at least that was the plan, forgot that you can't truncate
-            # on a relational DB like Postgres
-            elif strategy == "truncate_insert":
-                # Before the transaction starts
-                cur.execute(sql.SQL("SELECT COUNT(*) FROM {table_name};").format(
-                    table_name=full_table_identifier
-                ))
-                existing_row_count = cur.fetchone()[0]
-
-                expected_row_count_query = sql.SQL("SELECT COUNT(*) FROM {temp_table_name}").format(
-                    temp_table_name=temp_table_identifier
-                )
-                cur.execute(expected_row_count_query)
-                expected_row_count = cur.fetchone()[0]
-
-                # Check if the new count is drastically lower (e.g., a 50% drop)
-                if expected_row_count < (existing_row_count * 0.5):
-                    error_message = f"""
-                        DRAMATIC ROW COUNT DROP DETECTED for {full_table_name_str}.
-                        Aborting load. Old count: {existing_row_count}, New count: {expected_row_count}
-                    """
-                    raise RuntimeError(error_message)
-            
-                logging.info(f"Expected row count for insert: {expected_row_count}")
-                truncate_sql = sql.SQL("TRUNCATE TABLE {table_name}").format(
-                    table_name=full_table_identifier
-                )
-
-                insert_sql = sql.SQL("""
-                    INSERT INTO {table_name} ({all_columns})
-                    SELECT {all_columns} FROM {temp_table_name}
-                """).format(
-                    table_name=full_table_identifier,
-                    all_columns=all_columns,
-                    temp_table_name=temp_table_identifier
-                )
-
-                logging.info(f"Atomically truncating and reloading {full_table_name_str}...")
-                cur.execute(truncate_sql)
-                
-                # Execute the INSERT and fetch the count of inserted rows
-                cur.execute(insert_sql)
-                inserted_row_count = cur.rowcount
-                logging.info(f"Successfully inserted {inserted_row_count} rows.")
-
-                # --- Step 3: The Validation ---
-                logging.info("Validating row counts...")
-                if expected_row_count == inserted_row_count:
-                    logging.info("✅ Row count validation successful. Transaction will be committed.")
-                    # Everything is good. The 'with' block will finish and commit.
-                else:
-                    # If the counts don't match, something is wrong.
-                    # We must raise an exception to trigger a ROLLBACK.
-                    error_message = (
-                        f"CRITICAL VALIDATION FAILED for {full_table_name_str}: "
-                        f"Expected {expected_row_count} rows, but only {inserted_row_count} were inserted. "
-                        "Transaction will be rolled back."
-                    )
-                    logging.error(error_message)
-                    raise RuntimeError(error_message)
-
-    finally:
-        logging.info(f"Dropping temporary table {temp_table_name}...")
-        try:
-            with transaction_context(cursor) as cur:
-                cur.execute(sql.SQL("DROP TABLE IF EXISTS {temp_table_name}").format(
-                    temp_table_name=temp_table_identifier
-                ))
-            logging.info("Temporary table dropped successfully.")
-        except Exception as e:
-            logging.error(f"Failed to drop temporary table {temp_table_name}: {e}", exc_info=True)
-
+    except Exception as e:
+        logging.error(f"❌ Failed to load data to {full_table_name}", exc_info=True)
+        raise e
 
 # def load_table_with_partition(
 #     spark: SparkSession,
