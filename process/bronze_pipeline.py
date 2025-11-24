@@ -22,7 +22,6 @@ def run_bronze_pipeline(spark: SparkSession, ingestion_hours: list[str], process
     :param process_airports: Whether to process the airports data
     :return: None
     """
-    spark.sql("DROP DATABASE IF EXISTS bronze CASCADE")
     spark.sql("CREATE DATABASE IF NOT EXISTS bronze")
     
     try:

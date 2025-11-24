@@ -16,6 +16,7 @@ load_dotenv()
 
 base = Path(os.getenv("WORKSPACE_BASE", "./"))
 BRONZE_RAW_BASE = base / "bronze_raw"
+data_dir = base / "data"
 
 
 def write_delta_table(
@@ -39,8 +40,8 @@ def write_delta_table(
         partition_cols: A list of column names to partition the table by (only used on creation).
     """
     full_table_name = f"{db_name}.{table_name}"
-    table_path = f"{base}/{db_name}/{table_name}"
-    logging.info(f"--- Preparing to write to Delta table: {full_table_name} ---")
+    table_path = f"{data_dir}/{db_name}/{table_name}"
+    logging.info(f"--- Preparing to write to Delta table: {full_table_name} at {table_path} ---")
 
     # Safety checks
     if write_mode == "overwrite_partitions" and not partition_cols:
@@ -76,7 +77,8 @@ def write_delta_table(
                     .save(table_path)
                 )
 
-            spark.sql(f"CREATE TABLE {full_table_name} USING DELTA LOCATION '{table_path}'")
+
+            spark.sql(f"CREATE EXTERNAL TABLE {full_table_name} USING DELTA LOCATION '{table_path}'")
             logging.info(f"✅ Table '{full_table_name}' successfully created.")
             # Since the table was just created with the full data, the job is done.
             return
@@ -172,7 +174,7 @@ def merge_delta_table(
     and merges the resulting "golden record" back.
     """
     full_table_name = f"{db_name}.{table_name}"
-    table_path = f"{base}/{db_name}/{table_name}"
+    table_path = f"{data_dir}/{db_name}/{table_name}"
 
     try:
         if not spark.catalog.tableExists(full_table_name):
@@ -298,7 +300,7 @@ def merge_delta_table_with_scd(
         tracked_attribute_cols: A dictionary of column names to their corresponding version numbers.
         metadata_cols: A list of metadata column names (default=["_ingested_at", "_inserted_at"]).
     """
-    table_path = f"{base}/{db_name}/{table_name}"
+    table_path = f"{data_dir}/{db_name}/{table_name}"
 
 
     now = current_timestamp()
@@ -369,13 +371,6 @@ def merge_delta_table_with_scd(
             build_hash("existing", tracked_attribute_cols)
         )
 
-        compilation_df.filter(
-            (col("arriving.length_feet") == 4300) &
-            (col("arriving.width_feet") == 150) &
-            (col("arriving.runway_name") == "22") &
-            (col("arriving.elevation_feet") == 692)
-        ).show(10)
-
         logging.info(f"Preparing expired and new records...")
 
         # Identify expired records
@@ -425,13 +420,6 @@ def merge_delta_table_with_scd(
         )
 
         all_records = new_records.unionByName(expired_records, allowMissingColumns=True)
-        
-        all_records.filter(
-            (col("length_feet") == 4300) &
-            (col("width_feet") == 150) &
-            (col("runway_name") == "22") &
-            (col("elevation_feet") == 692)
-        ).show(10)
 
         # Perform the merge on version_key - PK of the table
         (

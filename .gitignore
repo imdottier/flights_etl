@@ -6,11 +6,16 @@ bronze_raw/
 /silver/
 gold/
 
+data/
+
 .env
 test_data.json
 
 metastore_db/
 spark-warehouse-dev/
+spark-warehouse/
+shared-jars/
+plugins/
 derby.log
 
 note.txt
@@ -25,6 +30,7 @@ csv/
 
 # Airflow local database
 airflow.db
+airflow.cfg
 
 # Airflow logs
 logs/

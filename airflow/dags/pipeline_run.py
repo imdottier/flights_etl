@@ -7,6 +7,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+DOCKER_ROOT = "/app"
+if os.path.exists(DOCKER_ROOT) and DOCKER_ROOT not in sys.path:
+    sys.path.insert(0, DOCKER_ROOT)
+
 from datetime import datetime, timedelta, timezone
 
 from airflow.sdk import dag, task
